@@ -48,5 +48,16 @@
         </div>
     </footer>
 
+    <script>
+    window.attachPasswordToggle = function (checkboxId, inputId) {
+        var cb = document.getElementById(checkboxId);
+        var input = document.getElementById(inputId);
+        if (!cb || !input) return;
+        cb.addEventListener("change", function () {
+            input.type = this.checked ? "text" : "password";
+        });
+    };
+    </script>
+    {% block extra_scripts %}{% endblock %}
 </body>
 </html>

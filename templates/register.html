@@ -11,9 +11,13 @@
                 <input type="email" name="email" required style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: #111620; color: #fff;">
             </div>
             
-            <div style="margin-bottom: 25px;">
+            <div style="margin-bottom: 12px;">
                 <label style="display: block; font-weight: 500; font-size: 0.9rem; margin-bottom: 8px;">Password</label>
-                <input type="password" name="password" required style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: #111620; color: #fff;">
+                <input type="password" name="password" id="registerPassword" required autocomplete="new-password" style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: #111620; color: #fff;">
+            </div>
+            <div style="margin-bottom: 25px; display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="registerShowPassword" style="width: 16px; height: 16px; accent-color: var(--primary);">
+                <label for="registerShowPassword" style="font-size: 0.9rem; color: var(--text-muted); cursor: pointer;">Show password</label>
             </div>
             
             <button type="submit" class="btn" style="width: 100%; padding: 12px; font-size: 1rem; border-radius: 6px;">Register</button>
@@ -24,4 +28,7 @@
         </p>
     </div>
 </div>
+{% endblock %}
+{% block extra_scripts %}
+<script>attachPasswordToggle("registerShowPassword", "registerPassword");</script>
 {% endblock %}

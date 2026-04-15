@@ -43,8 +43,9 @@ app.config['REMEMBER_COOKIE_HTTPONLY'] = True
 app.config['REMEMBER_COOKIE_SAMESITE'] = 'Lax'
 app.config['REMEMBER_COOKIE_SECURE'] = os.getenv("REMEMBER_COOKIE_SECURE", "0").strip() == "1"
 DB_NAME = "knives.db"
-UPLOAD_FOLDER = os.path.join('static', 'uploads')
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -150,10 +151,20 @@ def generate_unique_filename(ext):
     """Generate a unique filename with the given extension."""
     return f"img_{uuid.uuid4().hex[:12]}.{ext}"
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_NAME, timeout=30)
+
+STORED_IMAGE_NAME_RE = re.compile(
+    r"^img_[0-9a-f]{12}\.(?:png|jpg|jpeg|webp|gif)$", re.IGNORECASE
+)
+
+
+def is_server_stored_image_name(name):
+    return bool(name and STORED_IMAGE_NAME_RE.fullmatch(name))
+
+
+def get_db_connection(timeout=30):
+    conn = sqlite3.connect(DB_NAME, timeout=timeout)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute(f"PRAGMA busy_timeout = {int(max(1, timeout) * 1000)}")
     return conn
 
 
@@ -607,69 +618,72 @@ class KnifeAutoLookupService:
 knife_auto_lookup_service = KnifeAutoLookupService()
 
 def init_db():
-    with closing(get_db_connection()) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS knives (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                brand TEXT NOT NULL,
-                model TEXT NOT NULL,
-                category TEXT DEFAULT '',
-                status TEXT NOT NULL,
-                buy_price REAL NOT NULL DEFAULT 0,
-                estimated_value REAL NOT NULL DEFAULT 0,
-                quantity INTEGER NOT NULL DEFAULT 1,
-                notes TEXT DEFAULT '',
-                image TEXT DEFAULT '',
-                description TEXT DEFAULT '',
-                image_url TEXT DEFAULT '',
-                image_source_url TEXT DEFAULT '',
-                price_source_url TEXT DEFAULT '',
-                data_confidence TEXT DEFAULT 'low',
-                msrp_new_price REAL NOT NULL DEFAULT 0,
-                cost_price REAL NOT NULL DEFAULT 0,
-                sale_price REAL NOT NULL DEFAULT 0,
-                price_confidence TEXT DEFAULT 'low',
-                is_featured INTEGER DEFAULT 0
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT,
-                google_id TEXT,
-                is_admin INTEGER DEFAULT 0
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_email TEXT NOT NULL,
-                action TEXT NOT NULL,
-                entity_type TEXT NOT NULL,
-                entity_id INTEGER,
-                details TEXT DEFAULT '',
-                created_at TEXT NOT NULL
-            )
-        """)
-        # Initialize default settings
-        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('landing_page_enabled', '1')")
-        
-        # Migration: Add is_featured if it doesn't exist
+    for attempt in range(30):
         try:
-            conn.execute("ALTER TABLE knives ADD COLUMN is_featured INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass # Column already exists
-            
-        conn.commit()
+            with closing(get_db_connection(timeout=2)) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS knives (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        brand TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        category TEXT DEFAULT '',
+                        status TEXT NOT NULL,
+                        buy_price REAL NOT NULL DEFAULT 0,
+                        estimated_value REAL NOT NULL DEFAULT 0,
+                        quantity INTEGER NOT NULL DEFAULT 1,
+                        notes TEXT DEFAULT '',
+                        image TEXT DEFAULT '',
+                        description TEXT DEFAULT '',
+                        image_url TEXT DEFAULT '',
+                        image_source_url TEXT DEFAULT '',
+                        price_source_url TEXT DEFAULT '',
+                        data_confidence TEXT DEFAULT 'low',
+                        msrp_new_price REAL NOT NULL DEFAULT 0,
+                        cost_price REAL NOT NULL DEFAULT 0,
+                        sale_price REAL NOT NULL DEFAULT 0,
+                        price_confidence TEXT DEFAULT 'low',
+                        is_featured INTEGER DEFAULT 0
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        email TEXT UNIQUE NOT NULL,
+                        password_hash TEXT,
+                        google_id TEXT,
+                        is_admin INTEGER DEFAULT 0
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS audit_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_email TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        entity_type TEXT NOT NULL,
+                        entity_id INTEGER,
+                        details TEXT DEFAULT '',
+                        created_at TEXT NOT NULL
+                    )
+                """)
+                conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('landing_page_enabled', '1')")
+                try:
+                    conn.execute("ALTER TABLE knives ADD COLUMN is_featured INTEGER DEFAULT 0")
+                except sqlite3.OperationalError:
+                    pass
+                conn.commit()
+            return
+        except sqlite3.OperationalError as err:
+            if "locked" not in str(err).lower() or attempt >= 29:
+                raise
+            time.sleep(0.15)
 
 def get_setting(key, default=None):
     with closing(get_db_connection()) as conn:
@@ -725,7 +739,7 @@ def apply_security_headers(response):
 
 
 def write_audit_log(action, entity_type, entity_id=None, details=""):
-    actor = current_user.email if current_user.is_authenticated else "anonymous"
+    actor = (current_user.email if current_user.is_authenticated else None) or "anonymous"
     now = datetime.utcnow().isoformat(timespec="seconds")
     with closing(get_db_connection()) as conn:
         conn.execute(
@@ -1512,7 +1526,7 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
     # ── Image Handling ──
     # Priority: remove > new upload > hidden (from clipboard/URL JS) > existing
     remove_image = req.form.get("remove_image", "") == "1"
-    filename = existing_knife['image'] if existing_knife else ''
+    filename = (existing_knife["image"] or "") if existing_knife else ""
     image_url = ''  # We always store locally now
 
     if remove_image:
@@ -1527,9 +1541,9 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
 
     # If JS set a filename via clipboard/URL download
     js_filename = req.form.get("image_filename", "").strip()
-    if js_filename and not remove_image:
-        # Only use if the file actually exists
-        if os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], js_filename)):
+    if js_filename and not remove_image and is_server_stored_image_name(js_filename):
+        js_path = os.path.join(app.config["UPLOAD_FOLDER"], js_filename)
+        if os.path.isfile(js_path):
             filename = js_filename
 
     conn = get_db_connection()
