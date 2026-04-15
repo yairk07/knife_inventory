@@ -1,0 +1,89 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="header">
+    <h1>Dashboard Overview</h1>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 24px; margin-bottom: 35px;">
+    <div class="card" style="margin-bottom: 0; display: flex; flex-direction: column; justify-content: center; position: relative; overflow: hidden;">
+        <div style="position: absolute; right: -10px; top: -10px; opacity: 0.05;">
+            <svg viewBox="0 0 24 24" width="80" height="80" stroke="currentColor" stroke-width="2" fill="none"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+        </div>
+        <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Unique Models</h3>
+        <p style="font-size: 2.2rem; font-weight: 700; color: var(--text-main);">{{ counts.total_items }}</p>
+    </div>
+    
+    <div class="card" style="margin-bottom: 0; display: flex; flex-direction: column; justify-content: center; position: relative; overflow: hidden;">
+        <div style="position: absolute; right: -10px; top: -10px; opacity: 0.05;">
+            <svg viewBox="0 0 24 24" width="80" height="80" stroke="currentColor" stroke-width="2" fill="none"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
+        </div>
+        <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Total Inventory</h3>
+        <p style="font-size: 2.2rem; font-weight: 700; color: var(--primary);">{{ counts.total_quantity }}</p>
+    </div>
+
+    <div class="card" style="margin-bottom: 0; display: flex; flex-direction: column; justify-content: center;">
+        <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Total MSRP Value</h3>
+        <p style="font-size: 1.8rem; font-weight: 700; color: #60a5fa;">
+            {% if totals.total_msrp > 0 %}₪{{ "%.2f"|format(totals.total_msrp) }}{% else %}N/A{% endif %}
+        </p>
+    </div>
+
+    <div class="card" style="margin-bottom: 0; display: flex; flex-direction: column; justify-content: center;">
+        <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Est. Sales Value</h3>
+        <p style="font-size: 1.8rem; font-weight: 700; color: #818cf8;">
+            {% if totals.total_sale > 0 %}₪{{ "%.2f"|format(totals.total_sale) }}{% else %}N/A{% endif %}
+        </p>
+    </div>
+
+
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+    <div class="card">
+        <h2 style="margin-bottom: 20px; font-size: 1.2rem;">Inventory by Status</h2>
+        <table style="max-width: 400px;">
+            <thead>
+                <tr>
+                    <th>Status</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for status in status_counts %}
+                <tr>
+                    <td><span class="pill {{ status.status }}">{{ status.status.replace('_', ' ') }}</span></td>
+                    <td style="font-weight: 600;">{{ status.count }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="2">No data available.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2 style="margin-bottom: 20px; font-size: 1.2rem;">Pricing Coverage</h2>
+        <table style="max-width: 400px;">
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Filled</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>MSRP New Price</td>
+                    <td>{{ pricing_stats.has_msrp or 0 }} / {{ counts.total_items }}</td>
+                </tr>
+
+                <tr>
+                    <td>Sale Price Set</td>
+                    <td>{{ pricing_stats.has_sale or 0 }} / {{ counts.total_items }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}

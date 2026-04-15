@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLADE & STEEL | Premium Knives</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <header class="header">
+        <div class="container nav-content">
+            <a href="{{ url_for('index') }}" class="logo">BLADE & STEEL</a>
+            <nav class="nav-links">
+                <a href="{{ url_for('index') }}">Home</a>
+                <a href="{{ url_for('collection') }}">Collection</a>
+                {% if current_user.is_authenticated %}
+                    {% if current_user.is_admin or current_user.email == 'yairk07@gmail.com' %}
+                        <a href="{{ url_for('admin_dashboard') }}" style="color: var(--text-muted);">Admin</a>
+                    {% endif %}
+                    <a href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a href="{{ url_for('login') }}">Login</a>
+                {% endif %}
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="container" style="margin-top: 20px;">
+              {% for category, message in messages %}
+                <div class="flash-message" style="background: var(--surface-light); border: 1px solid var(--border); padding: 15px; margin-bottom: 20px; border-radius: 8px; color: {% if category == 'error' %}#ff5555{% else %}var(--primary){% endif %};">
+                    {{ message }}
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+        
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2026 Blade & Steel Premium Gear. All rights reserved.</p>
+        </div>
+    </footer>
+
+</body>
+</html>

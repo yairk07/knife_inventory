@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container" style="padding-top: 40px;">
+    <h1 style="margin-bottom: 30px; font-size: 2.5rem;">The Collection</h1>
+    
+    <form class="filters" method="GET" action="{{ url_for('collection') }}">
+        <input type="text" name="q" placeholder="Search..." value="{{ search_query }}">
+        
+        <select name="brand">
+            <option value="">All Brands</option>
+            {% for b in brands %}
+                <option value="{{ b }}" {% if brand_filter == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+        
+        <select name="category">
+            <option value="">All Categories</option>
+            {% for c in categories %}
+                <option value="{{ c }}" {% if category_filter == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+        </select>
+        
+        <button type="submit">Filter</button>
+        <a href="{{ url_for('collection') }}" style="color: var(--text-muted); margin-left: 10px; font-size: 0.9rem;">Clear</a>
+    </form>
+
+    <div class="product-grid">
+        {% for knife in knives %}
+        <a href="{{ url_for('product', knife_id=knife.id) }}" class="product-card">
+            {% if knife.image_url %}
+                <img src="{{ knife.image_url }}" alt="{{ knife.model }}" class="product-image">
+            {% elif knife.image %}
+                <img src="{{ url_for('static', filename='uploads/' ~ knife.image) }}" alt="{{ knife.model }}" class="product-image">
+            {% else %}
+                <div class="brand-logo-placeholder" data-brand="{{ knife.brand }}">
+                    {% if knife.brand and knife.brand.lower() not in ["none", "unknown"] %}{{ knife.brand }}{% else %}NO IMAGE{% endif %}
+                </div>
+            {% endif %}
+            
+            <div class="product-info">
+                <div class="product-brand">{{ knife.brand }}</div>
+                <div class="product-model">{{ knife.model }}</div>
+                <div class="product-price">
+                    {% if knife.sale_price and knife.sale_price > 0 %}
+                        ₪{{ "%.2f"|format(knife.sale_price) }}
+                    {% elif knife.msrp_new_price and knife.msrp_new_price > 0 %}
+                        ₪{{ "%.2f"|format(knife.msrp_new_price) }}
+                    {% elif knife.cost_price and knife.cost_price > 0 %}
+                        ₪{{ "%.2f"|format(knife.cost_price) }}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </div>
+            </div>
+            
+            {% if knife.status == 'sold' %}
+                <div style="position: absolute; top: 15px; right: 15px; background: rgba(0,0,0,0.8); color: #fff; padding: 5px 10px; font-size: 0.8rem; font-weight: bold; border: 1px solid var(--border);">SOLD</div>
+            {% endif %}
+        </a>
+        {% else %}
+        <p style="color: var(--text-muted); grid-column: 1/-1; padding: 40px 0; text-align: center;">No knives found matching criteria.</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="header">
+    <h1>Export Pricing</h1>
+</div>
+
+<div class="card" style="max-width: 900px;">
+    <p style="color: var(--text-muted); margin-bottom: 20px;">Use the filters below to select the knives you want to export. "Sold" items are automatically excluded.</p>
+    
+    <form method="GET" action="{{ url_for('admin_export') }}" style="display: flex; gap: 15px; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
+        <div style="flex: 1;">
+            <label style="display: block; font-weight: 500; margin-bottom: 8px;">Filter by Brand</label>
+            <select name="brand" onchange="this.form.submit()" style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px;">
+                <option value="">All Brands</option>
+                {% for b in brands %}
+                    <option value="{{ b }}" {% if brand_filter == b %}selected{% endif %}>{{ b }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div style="flex: 1;">
+            <label style="display: block; font-weight: 500; margin-bottom: 8px;">Filter by Category</label>
+            <select name="category" onchange="this.form.submit()" style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px;">
+                <option value="">All Categories</option>
+                {% for c in categories %}
+                    <option value="{{ c }}" {% if category_filter == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div style="display: flex; align-items: flex-end;">
+            <a href="{{ url_for('admin_export') }}" class="btn btn-outline">Clear Filters</a>
+        </div>
+    </form>
+
+    <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="color: var(--primary); font-size: 1rem; letter-spacing: 1px; margin: 0;">EXPORTED TEXT</h3>
+        <button type="button" id="copyBtn" class="btn" style="padding: 10px 20px; display: flex; align-items: center; gap: 8px;">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            Copy to Clipboard
+        </button>
+    </div>
+
+    <textarea id="exportText" readonly style="width: 100%; height: 350px; padding: 15px; border: 1px solid var(--border); border-radius: 6px; font-family: monospace; font-size: 0.95rem; line-height: 1.5; resize: vertical; background: var(--bg-color);">{{ export_text }}</textarea>
+</div>
+
+<script>
+    document.getElementById('copyBtn').addEventListener('click', function() {
+        const textArea = document.getElementById('exportText');
+        textArea.select();
+        textArea.setSelectionRange(0, 99999); /* For mobile devices */
+        
+        try {
+            document.execCommand('copy');
+            const originalText = this.innerHTML;
+            this.innerHTML = '<span style="color: #22c55e; display: flex; align-items: center; gap: 8px;"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied!</span>';
+            setTimeout(() => {
+                this.innerHTML = originalText;
+            }, 2000);
+        } catch (err) {
+            console.error('Failed to copy', err);
+            alert('Failed to copy to clipboard.');
+        }
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <div class="product-detail-container">
+        
+        <div class="product-detail-image">
+            {% if knife.image_url %}
+                <img src="{{ knife.image_url }}" alt="{{ knife.model }}">
+            {% elif knife.image %}
+                <img src="{{ url_for('static', filename='uploads/' ~ knife.image) }}" alt="{{ knife.model }}">
+            {% else %}
+                <div class="brand-logo-placeholder" data-brand="{{ knife.brand }}" style="height: 500px; font-size: 4rem;">
+                    {% if knife.brand and knife.brand.lower() not in ["none", "unknown"] %}{{ knife.brand }}{% else %}NO IMAGE{% endif %}
+                </div>
+            {% endif %}
+        </div>
+        
+        <div class="product-detail-info">
+            <div class="product-detail-brand">{{ knife.brand }}</div>
+            <h1>{{ knife.model }}</h1>
+            
+            <div class="product-detail-price">
+                {% if knife.sale_price and knife.sale_price > 0 %}
+                    ₪{{ "%.2f"|format(knife.sale_price) }}
+                    {% if knife.msrp_new_price and knife.msrp_new_price > 0 and knife.msrp_new_price != knife.sale_price %}
+                        <span style="font-size: 1rem; color: var(--text-muted); text-decoration: line-through; margin-left: 15px;">
+                            ₪{{ "%.2f"|format(knife.msrp_new_price) }} MSRP
+                        </span>
+                    {% endif %}
+                {% elif knife.msrp_new_price and knife.msrp_new_price > 0 %}
+                    ₪{{ "%.2f"|format(knife.msrp_new_price) }}
+                {% elif knife.cost_price and knife.cost_price > 0 %}
+                    ₪{{ "%.2f"|format(knife.cost_price) }}
+                {% else %}
+                    N/A
+                {% endif %}
+                {% if knife.price_source_url and knife.price_confidence in ['high', 'medium'] %}
+                    <a href="{{ knife.price_source_url }}" target="_blank" style="font-size: 0.9rem; color: var(--text-muted); text-decoration: underline; margin-left: 10px;">(Price Ref)</a>
+                {% endif %}
+            </div>
+            
+            <p class="product-detail-desc">
+                {{ knife.description if knife.description else "No description available for this model." }}
+            </p>
+            
+            <ul class="detail-specs">
+                <li>
+                    <span>Category</span>
+                    <strong>{{ knife.category if knife.category else 'N/A' }}</strong>
+                </li>
+                <li>
+                    <span>Status</span>
+                    <strong style="text-transform: capitalize;">{{ knife.status.replace('_', ' ') }}</strong>
+                </li>
+                <li>
+                    <span>Availability</span>
+                    {% if knife.status == 'sold' %}
+                        <strong style="color: #ef4444;">Out of Stock</strong>
+                    {% else %}
+                        <strong style="color: #10b981;">In Stock ({{ knife.quantity }})</strong>
+                    {% endif %}
+                </li>
+            </ul>
+            
+            {% if knife.status != 'sold' %}
+                <button class="btn-primary" style="width: 100%; padding: 20px;">Contact to Purchase</button>
+            {% else %}
+                <button class="btn-primary" style="width: 100%; padding: 20px; background-color: var(--bg-surface); color: var(--text-muted); cursor: not-allowed;" disabled>Sold Out</button>
+            {% endif %}
+            
+        </div>
+    </div>
+</div>
+{% endblock %}

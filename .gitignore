@@ -1,0 +1,53 @@
+# === Environment & Secrets ===
+.env
+*.env
+.env.*
+
+# === Database ===
+*.db
+*.db.backup
+*.sqlite
+*.sqlite3
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# === Virtual Environments ===
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# === Uploaded Images (user content) ===
+static/uploads/
+
+# === IDE & OS ===
+.vs/
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Logs ===
+*.log
+
+# === Misc ===
+missing.json

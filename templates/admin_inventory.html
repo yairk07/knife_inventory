@@ -1,0 +1,386 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="header">
+    <div>
+        <h1>Inventory Manager</h1>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 4px;">Click any status badge to update it instantly — no page reload needed.</p>
+    </div>
+</div>
+
+<style>
+    .inv-filters {
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-bottom: 24px;
+    }
+    
+    .filter-search {
+        position: relative;
+        flex: 1;
+        min-width: 220px;
+    }
+    .filter-search svg {
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+    }
+    .filter-search input {
+        width: 100%;
+        padding-left: 38px !important;
+    }
+
+    /* STATUS PILLS */
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: all 0.18s ease;
+        user-select: none;
+    }
+    .status-pill:hover {
+        filter: brightness(1.2);
+        transform: scale(1.05);
+    }
+    .status-pill.active-status {
+        outline: 2px solid #fff;
+        outline-offset: 2px;
+    }
+
+    /* STATUS ACTIONS (inline row buttons) */
+    .status-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .status-btn {
+        padding: 5px 10px;
+        border-radius: 16px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        cursor: pointer;
+        border: 1.5px solid transparent;
+        transition: all 0.15s ease;
+        background: transparent;
+    }
+    .status-btn:hover {
+        transform: scale(1.06);
+    }
+    .status-btn.current {
+        opacity: 1 !important;
+    }
+    .status-btn:not(.current) {
+        opacity: 0.35;
+    }
+    .status-btn:not(.current):hover {
+        opacity: 1;
+    }
+
+    /* QTY control */
+    .qty-control {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .qty-btn {
+        width: 26px;
+        height: 26px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--sidebar-hover);
+        color: var(--text-main);
+        cursor: pointer;
+        font-size: 1rem;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.15s;
+        line-height: 1;
+    }
+    .qty-btn:hover { background: var(--primary); color: #000; }
+    .qty-num {
+        min-width: 28px;
+        text-align: center;
+        font-weight: 700;
+        font-size: 1rem;
+    }
+
+    /* Saved flash */
+    .saved-flash {
+        display: none;
+        color: #10b981;
+        font-size: 0.8rem;
+        font-weight: 600;
+        animation: fadeOut 1.5s ease forwards;
+    }
+    @keyframes fadeOut {
+        0%   { opacity: 1; }
+        70%  { opacity: 1; }
+        100% { opacity: 0; }
+    }
+
+    /* Summary bar */
+    .status-summary {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+    }
+    .summary-chip {
+        padding: 6px 16px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: 1.5px solid transparent;
+        text-decoration: none;
+    }
+    .summary-chip:hover { filter: brightness(1.15); }
+
+    td { vertical-align: middle; }
+
+    /* toast notification */
+    #toast {
+        position: fixed;
+        bottom: 30px;
+        right: 30px;
+        background: #0f141e;
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--primary);
+        color: var(--text-main);
+        padding: 14px 22px;
+        border-radius: 10px;
+        font-size: 0.9rem;
+        font-weight: 500;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        transform: translateY(80px);
+        opacity: 0;
+        transition: all 0.3s ease;
+        z-index: 1000;
+        pointer-events: none;
+    }
+    #toast.show {
+        transform: translateY(0);
+        opacity: 1;
+    }
+</style>
+
+<!-- SUMMARY BAR -->
+{% set status_counts = {} %}
+{% for k in knives %}
+    {% set _ = status_counts.update({k.status: status_counts.get(k.status, 0) + 1}) %}
+{% endfor %}
+
+<div class="status-summary">
+    {% for st in statuses %}
+        <a href="{{ url_for('admin_inventory', brand=brand_filter, q=search_q, status=st.key) }}"
+           class="summary-chip"
+           style="background: {{ st.color }}22; color: {{ st.color }}; border-color: {{ st.color }}44;">
+            {{ st.label }}
+        </a>
+    {% endfor %}
+    <a href="{{ url_for('admin_inventory', brand=brand_filter, q=search_q) }}"
+       class="summary-chip"
+       style="background: var(--sidebar-hover); color: var(--text-muted); border-color: var(--border);">
+        All Statuses
+    </a>
+</div>
+
+<!-- FILTERS -->
+<div class="card" style="margin-bottom: 24px; padding: 18px;">
+    <form method="GET" action="{{ url_for('admin_inventory') }}" class="inv-filters">
+        <div class="filter-search">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" name="q" placeholder="Search brand or model..." value="{{ search_q }}">
+        </div>
+        <select name="brand" style="width: 200px;" onchange="this.form.submit()">
+            <option value="">All Brands</option>
+            {% for b in brands %}
+                <option value="{{ b }}" {% if brand_filter == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+        <select name="status" style="width: 180px;" onchange="this.form.submit()">
+            <option value="">All Statuses</option>
+            {% for st in statuses %}
+                <option value="{{ st.key }}" {% if status_filter == st.key %}selected{% endif %}>{{ st.label }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="btn">Search</button>
+        <input type="hidden" name="brand" value="{{ brand_filter }}">
+        <a href="{{ url_for('admin_inventory') }}" style="color: var(--text-muted); text-decoration: underline; font-size: 0.9rem;">Reset</a>
+    </form>
+</div>
+
+<!-- INVENTORY TABLE -->
+<div class="card" style="padding: 0; overflow-x: auto;">
+    <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--text-muted); font-size: 0.9rem;">{{ knives|length }} item{{ 's' if knives|length != 1 else '' }}</span>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 50px;">Img</th>
+                <th>Brand</th>
+                <th>Model</th>
+                <th style="width: 60px; text-align: center;">Qty</th>
+                <th>Status</th>
+                <th style="min-width: 380px;">Quick Change</th>
+                <th style="width: 60px;"></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for knife in knives %}
+            <tr id="row-{{ knife.id }}">
+                <td>
+                    {% if knife.image_url %}
+                        <img src="{{ knife.image_url }}" alt="" style="width: 42px; height: 42px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border);">
+                    {% elif knife.image %}
+                        <img src="{{ url_for('static', filename='uploads/' ~ knife.image) }}" alt="" style="width: 42px; height: 42px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border);">
+                    {% else %}
+                        <div style="width: 42px; height: 42px; border-radius: 6px; background: var(--border); display: flex; align-items: center; justify-content: center;">
+                            <svg viewBox="0 0 24 24" width="18" height="18" stroke="var(--text-muted)" stroke-width="2" fill="none"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                        </div>
+                    {% endif %}
+                </td>
+                <td style="font-weight: 600; color: var(--text-muted); font-size: 0.9rem;">{{ knife.brand }}</td>
+                <td style="font-weight: 500;">{{ knife.model }}</td>
+                <td style="text-align: center;">
+                    <div class="qty-control" style="justify-content: center;">
+                        <button class="qty-btn" onclick="changeQty({{ knife.id }}, -1)" title="Decrease">−</button>
+                        <span class="qty-num" id="qty-{{ knife.id }}">{{ knife.quantity }}</span>
+                        <button class="qty-btn" onclick="changeQty({{ knife.id }}, 1)" title="Increase">+</button>
+                    </div>
+                </td>
+                <td>
+                    {% set cur_status = statuses | selectattr('key', 'equalto', knife.status) | list %}
+                    {% if cur_status %}
+                        {% set s = cur_status[0] %}
+                        <span id="badge-{{ knife.id }}" class="status-pill" style="background: {{ s.color }}22; color: {{ s.color }}; border-color: {{ s.color }}66;">
+                            {{ s.label }}
+                        </span>
+                    {% else %}
+                        <span id="badge-{{ knife.id }}" class="status-pill" style="background: #33383f22; color: #8b95a5; border-color: #33383f66;">
+                            {{ knife.status.replace('_', ' ') | title }}
+                        </span>
+                    {% endif %}
+                    <span class="saved-flash" id="saved-{{ knife.id }}">Saved!</span>
+                </td>
+                <td>
+                    <div class="status-actions">
+                        {% for st in statuses %}
+                        <button class="status-btn {% if knife.status == st.key %}current{% endif %}"
+                                id="btn-{{ knife.id }}-{{ st.key }}"
+                                style="color: {{ st.color }}; border-color: {{ st.color }};"
+                                onclick="setStatus({{ knife.id }}, '{{ st.key }}')"
+                                title="{{ st.label }}">
+                            {{ st.label }}
+                        </button>
+                        {% endfor %}
+                    </div>
+                </td>
+                <td>
+                    <a href="{{ url_for('admin_edit_knife', knife_id=knife.id) }}" class="btn btn-outline" style="padding: 6px 10px; font-size: 0.8rem;">Edit</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-muted);">No knives found matching your filters.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script>
+const STATUSES = {{ statuses | tojson }};
+const STATUS_MAP = {};
+STATUSES.forEach(s => { STATUS_MAP[s.key] = s; });
+
+function showToast(msg, color) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.style.borderLeftColor = color || 'var(--primary)';
+    toast.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => toast.classList.remove('show'), 2500);
+}
+
+function setStatus(knifeId, newStatus) {
+    fetch('/admin/inventory/update-status', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: knifeId, status: newStatus})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            const st = STATUS_MAP[newStatus];
+            
+            // Update badge
+            const badge = document.getElementById('badge-' + knifeId);
+            badge.textContent = st.label;
+            badge.style.background = st.color + '22';
+            badge.style.color = st.color;
+            badge.style.borderColor = st.color + '66';
+
+            // Update buttons
+            STATUSES.forEach(s => {
+                const btn = document.getElementById('btn-' + knifeId + '-' + s.key);
+                if (btn) {
+                    btn.classList.toggle('current', s.key === newStatus);
+                }
+            });
+
+            // Flash saved
+            const savedEl = document.getElementById('saved-' + knifeId);
+            savedEl.style.display = 'inline';
+            savedEl.style.animation = 'none';
+            void savedEl.offsetWidth;
+            savedEl.style.animation = 'fadeOut 1.5s ease forwards';
+            setTimeout(() => savedEl.style.display = 'none', 1600);
+
+            showToast('Status updated to "' + st.label + '"', st.color);
+        }
+    })
+    .catch(() => showToast('Error saving. Try again.', '#ef4444'));
+}
+
+function changeQty(knifeId, delta) {
+    const el = document.getElementById('qty-' + knifeId);
+    let current = parseInt(el.textContent) || 1;
+    let next = Math.max(1, current + delta);
+    el.textContent = next;
+
+    // Optimistic update — debounce the fetch
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => {
+        fetch('/admin/inventory/update-quantity', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id: knifeId, quantity: next})
+        }).then(r => r.json()).then(d => {
+            if (d.ok) showToast('Qty updated to ' + d.quantity, 'var(--primary)');
+        });
+    }, 600);
+}
+</script>
+{% endblock %}
