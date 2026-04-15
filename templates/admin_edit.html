@@ -37,6 +37,10 @@
                 <label style="display: block; font-weight: 500; margin-bottom: 5px;">Quantity</label>
                 <input type="number" min="1" name="quantity" value="{{ knife.quantity if knife else '1' }}" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px;">
             </div>
+            <div style="display: flex; align-items: center; gap: 10px; padding-top: 25px;">
+                <input type="checkbox" name="is_featured" id="is_featured" {% if knife and knife.is_featured %}checked{% endif %} style="width: 20px; height: 20px; cursor: pointer;">
+                <label for="is_featured" style="font-weight: 600; cursor: pointer; color: var(--primary);">★ Featured Gear (Show on Home Page)</label>
+            </div>
         </div>
 
         <!-- SECTION: Pricing -->
@@ -83,6 +87,17 @@
 
         <!-- SECTION: Image -->
         <h3 style="color: var(--primary); border-bottom: 1px solid var(--border); padding-bottom: 10px; font-size: 1rem; letter-spacing: 1px;">IMAGE</h3>
+        <div style="background: #0f141e; border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+            <div style="display: flex; gap: 8px; align-items: end; flex-wrap: wrap;">
+                <div style="min-width: 220px; flex: 1;">
+                    <label style="display: block; font-weight: 500; margin-bottom: 5px;">Auto search attributes</label>
+                    <input type="text" id="autoAttributes" placeholder="black, carbon fiber handle, tanto" style="width: 100%; padding: 10px;">
+                </div>
+                <button type="button" class="btn" id="autoSearchBtn" onclick="runAutoSearch()">Auto Fetch Image + Price</button>
+            </div>
+            <p id="autoSearchStatus" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 8px;">Searches web candidates by brand/model and lets you pick.</p>
+            <div id="autoResults" style="display: none; margin-top: 12px; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));"></div>
+        </div>
         
         <!-- Hidden fields for image handling -->
         <input type="hidden" name="image_filename" id="imageFilename" value="">
@@ -214,7 +229,7 @@ async function downloadFromUrl() {
     status.style.color = '#d4af37';
 
     try {
-        const resp = await fetch('/admin/api/upload-url', {
+        const resp = await apiFetch('/admin/api/upload-url', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url: url })
@@ -280,7 +295,7 @@ pasteZone.addEventListener('paste', async function(e) {
         const base64data = event.target.result;
 
         try {
-            const resp = await fetch('/admin/api/upload-clipboard', {
+            const resp = await apiFetch('/admin/api/upload-clipboard', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ image_data: base64data })
@@ -305,27 +320,125 @@ pasteZone.addEventListener('paste', async function(e) {
     reader.readAsDataURL(blob);
 });
 
-// Also listen for paste on the whole document (convenience)
-document.addEventListener('paste', function(e) {
-    // Only if the paste zone or form is focused (not in text inputs)
-    const active = document.activeElement;
-    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
-        if (active.type !== 'file' && active.id !== 'pasteZone') return;
+// Clipboard upload is intentionally limited to pasteZone events only.
+
+function formatCandidatePrice(candidate) {
+    if (!candidate.price) return 'Price: N/A';
+    if (candidate.currency === 'ILS') return 'Price: ₪' + Number(candidate.price).toFixed(2);
+    if (candidate.currency === 'USD') return 'Price: $' + Number(candidate.price).toFixed(2);
+    return 'Price: ' + Number(candidate.price).toFixed(2);
+}
+
+function renderAutoResults(candidates) {
+    const results = document.getElementById('autoResults');
+    results.innerHTML = '';
+    if (!candidates.length) {
+        results.style.display = 'none';
+        return;
     }
-    // Forward to paste zone handler
-    const items = e.clipboardData.items;
-    for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/')) {
-            // Has an image - trigger the paste zone logic
-            pasteZone.dispatchEvent(new ClipboardEvent('paste', {
-                clipboardData: e.clipboardData,
-                bubbles: true
-            }));
-            e.preventDefault();
-            return;
+    results.style.display = 'grid';
+    candidates.forEach((candidate, idx) => {
+        const card = document.createElement('div');
+        card.style.background = '#111620';
+        card.style.border = '1px solid var(--border)';
+        card.style.borderRadius = '8px';
+        card.style.padding = '10px';
+        card.innerHTML = `
+            <img src="${candidate.image_url}" style="width:100%; height:120px; object-fit:cover; border-radius:6px; border:1px solid var(--border);" alt="candidate ${idx + 1}">
+            <div style="font-size:0.75rem; margin-top:8px; color:var(--text-main); min-height:36px;">${(candidate.title || 'Candidate').slice(0, 80)}</div>
+            <div style="font-size:0.75rem; color:#60a5fa; margin-top:4px;">${formatCandidatePrice(candidate)}</div>
+            <div style="display:flex; gap:6px; margin-top:8px;">
+                <button type="button" style="flex:1; background:var(--primary); border:none; border-radius:6px; padding:6px; font-size:0.75rem; font-weight:600; cursor:pointer;" data-action="both">Use Both</button>
+                <button type="button" style="flex:1; background:#1e293b; color:#fff; border:none; border-radius:6px; padding:6px; font-size:0.75rem; cursor:pointer;" data-action="img">Image</button>
+                <button type="button" style="flex:1; background:#1e293b; color:#fff; border:none; border-radius:6px; padding:6px; font-size:0.75rem; cursor:pointer;" data-action="price">Price</button>
+            </div>
+        `;
+        card.querySelectorAll('button').forEach((btn) => {
+            btn.addEventListener('click', () => applyCandidate(candidate, btn.dataset.action));
+        });
+        results.appendChild(card);
+    });
+}
+
+async function applyCandidate(candidate, action) {
+    const status = document.getElementById('autoSearchStatus');
+    if (action === 'both' || action === 'img') {
+        document.getElementById('imageUrlInput').value = candidate.image_url;
+        await downloadFromUrl();
+        if (candidate.page_url) {
+            document.getElementById('imageSourceUrl').value = candidate.page_url;
         }
     }
-});
+    if (action === 'both' || action === 'price') {
+        if (candidate.price) {
+            const normalized = candidate.currency === 'USD' ? Number(candidate.price) * 3.2 : Number(candidate.price);
+            const priceInput = document.querySelector('input[name="msrp_new_price"]');
+            if (priceInput) priceInput.value = normalized.toFixed(2);
+        }
+        if (candidate.source_url) {
+            const sourceInput = document.querySelector('input[name="price_source_url"]');
+            if (sourceInput) sourceInput.value = candidate.source_url;
+        }
+    }
+    status.textContent = 'Selected candidate applied.';
+    status.style.color = '#22c55e';
+}
+
+async function runAutoSearch() {
+    const brand = (document.querySelector('input[name="brand"]')?.value || '').trim();
+    const model = (document.querySelector('input[name="model"]')?.value || '').trim();
+    const attributes = (document.getElementById('autoAttributes')?.value || '').trim();
+    const status = document.getElementById('autoSearchStatus');
+    const btn = document.getElementById('autoSearchBtn');
+    if (!brand || !model) {
+        status.textContent = 'Brand and model are required.';
+        status.style.color = '#ef4444';
+        return;
+    }
+    btn.disabled = true;
+    status.textContent = 'Searching candidates...';
+    status.style.color = '#d4af37';
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 28000);
+    try {
+        const resp = await apiFetch('/admin/api/auto-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ brand, model, attributes }),
+            signal: controller.signal
+        });
+        const raw = await resp.text();
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch (parseErr) {
+            status.textContent = 'Bad response from server. Check that the app is running.';
+            status.style.color = '#ef4444';
+            renderAutoResults([]);
+            return;
+        }
+        if (!resp.ok || !data.ok) {
+            status.textContent = 'Search failed: ' + (data.error || resp.statusText || 'Unknown error');
+            status.style.color = '#ef4444';
+            renderAutoResults([]);
+            return;
+        }
+        renderAutoResults(data.candidates || []);
+        status.textContent = (data.candidates || []).length + ' candidates found. Choose one.';
+        status.style.color = '#22c55e';
+    } catch (err) {
+        if (err && err.name === 'AbortError') {
+            status.textContent = 'Search took too long. Try again — the server may be busy.';
+        } else {
+            status.textContent = 'Network error: ' + (err && err.message ? err.message : 'connection failed');
+        }
+        status.style.color = '#ef4444';
+        renderAutoResults([]);
+    } finally {
+        clearTimeout(abortTimer);
+        btn.disabled = false;
+    }
+}
 </script>
 
 {% endblock %}

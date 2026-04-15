@@ -2,24 +2,46 @@ import os
 import sqlite3
 import uuid
 import base64
+import secrets
+import re
+import json
+import concurrent.futures
+import time
 import urllib.request
 import ssl
+from datetime import datetime, timezone
 from contextlib import closing
 from functools import wraps
+from collections import defaultdict, deque
+from urllib.parse import urlparse, parse_qs, unquote
+import requests
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from werkzeug.utils import secure_filename
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
 from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
+try:
+    from ddgs import DDGS
+except ImportError:
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        DDGS = None
 
 load_dotenv(override=True)
 
 app = Flask(__name__)
-# SECRET_KEY from env; falls back to a random key (NOT persistent across restarts)
-app.secret_key = os.getenv('SECRET_KEY') or os.urandom(32)
+secret_key = os.getenv("SECRET_KEY", "").strip()
+if not secret_key:
+    raise RuntimeError("Missing SECRET_KEY in environment. Please set it in .env.")
+app.secret_key = secret_key
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.getenv("SESSION_COOKIE_SECURE", "0").strip() == "1"
+app.config['REMEMBER_COOKIE_HTTPONLY'] = True
+app.config['REMEMBER_COOKIE_SAMESITE'] = 'Lax'
+app.config['REMEMBER_COOKIE_SECURE'] = os.getenv("REMEMBER_COOKIE_SECURE", "0").strip() == "1"
 DB_NAME = "knives.db"
 UPLOAD_FOLDER = os.path.join('static', 'uploads')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -28,21 +50,98 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 app.config['GOOGLE_CLIENT_ID'] = os.getenv("GOOGLE_CLIENT_ID", "")
 app.config['GOOGLE_CLIENT_SECRET'] = os.getenv("GOOGLE_CLIENT_SECRET", "")
+app.config['GOOGLE_REDIRECT_URI'] = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+
+if os.getenv("TRUST_PROXY", "0").strip() == "1":
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 
 oauth = OAuth(app)
-google = oauth.register(
-    name='google',
-    client_id=app.config['GOOGLE_CLIENT_ID'],
-    client_secret=app.config['GOOGLE_CLIENT_SECRET'],
-    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
-    client_kwargs={'scope': 'openid email profile'}
-)
+
+
+class GoogleOAuthService:
+    def __init__(self, oauth_backend, flask_app):
+        self._oauth = oauth_backend
+        self._app = flask_app
+        self._client = None
+
+    def is_configured(self):
+        c = self._app.config
+        return bool((c.get('GOOGLE_CLIENT_ID') or '').strip() and (c.get('GOOGLE_CLIENT_SECRET') or '').strip())
+
+    def get_client(self):
+        if not self.is_configured():
+            return None
+        if self._client is None:
+            self._client = self._oauth.register(
+                name='google',
+                client_id=self._app.config['GOOGLE_CLIENT_ID'],
+                client_secret=self._app.config['GOOGLE_CLIENT_SECRET'],
+                server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+                client_kwargs={'scope': 'openid email profile'}
+            )
+        return self._client
+
+
+google_oauth_service = GoogleOAuthService(oauth, app)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'gif'}
+TRUSTED_STATUSES = {"home", "sold", "need_to_order", "ordered", "on_the_way", "cart"}
+TRUSTED_CONFIDENCE = {"low", "medium", "high"}
+
+
+class LoginRateLimiter:
+    def __init__(self, max_attempts=5, window_seconds=900):
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self.attempts = defaultdict(deque)
+
+    def _prune_old_attempts(self, ip):
+        now = time.time()
+        bucket = self.attempts[ip]
+        while bucket and now - bucket[0] > self.window_seconds:
+            bucket.popleft()
+        if not bucket:
+            self.attempts.pop(ip, None)
+
+    def is_allowed(self, ip):
+        self._prune_old_attempts(ip)
+        return len(self.attempts.get(ip, ())) < self.max_attempts
+
+    def register_failure(self, ip):
+        self._prune_old_attempts(ip)
+        self.attempts[ip].append(time.time())
+
+    def clear_failures(self, ip):
+        self.attempts.pop(ip, None)
+
+
+class AppSecurityService:
+    def __init__(self, login_rate_limiter):
+        self.login_rate_limiter = login_rate_limiter
+
+    def client_ip(self):
+        forwarded_for = request.headers.get("X-Forwarded-For", "")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        return request.remote_addr or "unknown"
+
+    def add_security_headers(self, response):
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        if request.is_secure:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+login_rate_limiter = LoginRateLimiter()
+app_security_service = AppSecurityService(login_rate_limiter)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -52,12 +151,465 @@ def generate_unique_filename(ext):
     return f"img_{uuid.uuid4().hex[:12]}.{ext}"
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
+
+
+class KnifeInputService:
+    def clean_text(self, value, fallback=""):
+        return (value or fallback).strip()
+
+    def clean_float(self, value, fallback=0.0):
+        try:
+            cleaned = float(str(value).strip())
+            return round(max(0.0, cleaned), 2)
+        except (TypeError, ValueError):
+            return fallback
+
+    def clean_int(self, value, fallback=1, minimum=1):
+        try:
+            parsed = int(str(value).strip())
+            return max(minimum, parsed)
+        except (TypeError, ValueError):
+            return fallback
+
+    def clean_url(self, value):
+        url = self.clean_text(value)
+        if not url:
+            return ""
+        if url.startswith(("http://", "https://")):
+            return url
+        return ""
+
+    def normalize_status(self, value):
+        status = self.clean_text(value, "home")
+        return status if status in TRUSTED_STATUSES else "home"
+
+    def normalize_confidence(self, value):
+        conf = self.clean_text(value, "low")
+        return conf if conf in TRUSTED_CONFIDENCE else "low"
+
+
+knife_input_service = KnifeInputService()
+
+
+class KnifeAutoLookupService:
+    _cache = {}
+    _cache_ttl_seconds = 600
+    _blocked_domains = {"youtube.com", "youtu.be", "facebook.com", "instagram.com", "tiktok.com"}
+    _preferred_domains = {
+        "bladehq.com": 40,
+        "knifecenter.com": 38,
+        "smkw.com": 34,
+        "dltradingco.com": 20,
+        "whitemountainknives.com": 30,
+        "dlttrading.com": 24,
+        "lamnia.com": 22,
+        "knivesplus.com": 20,
+        "amazon.com": 12,
+        "ebay.com": 8,
+    }
+
+    def _from_cache(self, cache_key):
+        item = self._cache.get(cache_key)
+        if not item:
+            return None
+        age = (datetime.now(timezone.utc) - item["created_at"]).total_seconds()
+        if age > self._cache_ttl_seconds:
+            self._cache.pop(cache_key, None)
+            return None
+        return item["results"]
+
+    def _save_cache(self, cache_key, results):
+        self._cache[cache_key] = {"created_at": datetime.now(timezone.utc), "results": results}
+
+    def _extract_price(self, text):
+        if not text:
+            return None, None
+        if "€" in text:
+            euro_match = re.search(r"[€]\s*([\d,]+(?:\.\d{1,2})?)", text)
+            if euro_match:
+                return round(float(euro_match.group(1).replace(",", "")), 2), "EUR"
+        shekel_match = re.search(r"[₪]\s*([\d,]+(?:\.\d{1,2})?)", text)
+        if shekel_match:
+            return round(float(shekel_match.group(1).replace(",", "")), 2), "ILS"
+        dollar_match = re.search(r"[$]\s*([\d,]+(?:\.\d{1,2})?)", text)
+        if dollar_match:
+            return round(float(dollar_match.group(1).replace(",", "")), 2), "USD"
+        return None, None
+
+    def _quick_price_hints(self, brand, model):
+        hints = []
+        q = f"{brand} {model} knife price".strip()
+        for row in self._search_bing(q, max_results=10):
+            body = row.get("snippet", "") or ""
+            title = row.get("title", "") or ""
+            href = row.get("href", "") or ""
+            price, currency = self._extract_price(f"{title} {body}")
+            if not price:
+                continue
+            domain = self._normalize_domain(href)
+            hints.append({
+                "domain": domain,
+                "price": price,
+                "currency": currency,
+                "source_url": href
+            })
+        return hints
+
+    def _normalize_domain(self, url):
+        raw = urlparse(url).netloc.lower()
+        return raw[4:] if raw.startswith("www.") else raw
+
+    def _search_bing(self, query, max_results=20):
+        links = []
+        try:
+            resp = requests.get(
+                "https://www.bing.com/search",
+                params={"q": query, "setlang": "en-US"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
+            )
+            if resp.status_code >= 400:
+                return links
+            html = resp.text
+            blocks = re.findall(r'<li class="b_algo".*?</li>', html, flags=re.IGNORECASE | re.DOTALL)
+            for block in blocks:
+                href_match = re.search(r'<a href="([^"]+)"', block, flags=re.IGNORECASE)
+                title_match = re.search(r"<h2.*?>(.*?)</h2>", block, flags=re.IGNORECASE | re.DOTALL)
+                snippet_match = re.search(r'<p>(.*?)</p>', block, flags=re.IGNORECASE | re.DOTALL)
+                if not href_match:
+                    continue
+                href = href_match.group(1).strip()
+                title = re.sub(r"<[^>]+>", " ", title_match.group(1)).strip() if title_match else ""
+                snippet = re.sub(r"<[^>]+>", " ", snippet_match.group(1)).strip() if snippet_match else ""
+                links.append({"href": href, "title": title, "snippet": snippet})
+                if len(links) >= max_results:
+                    break
+        except Exception:
+            return links
+        return links
+
+    def _run_with_timeout(self, func, timeout_seconds=8):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(func)
+            try:
+                return future.result(timeout=timeout_seconds)
+            except Exception:
+                return []
+
+    def _search_bing_images(self, query, max_results=14):
+        results = []
+        try:
+            resp = requests.get(
+                "https://www.bing.com/images/search",
+                params={"q": query, "form": "HDRSC3"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
+            )
+            if resp.status_code >= 400:
+                return results
+            html = resp.text
+            blobs = re.findall(r'm="(\{.*?\})"', html, flags=re.IGNORECASE)
+            for blob in blobs:
+                try:
+                    decoded = blob.replace("&quot;", '"')
+                    data = json.loads(decoded)
+                except Exception:
+                    continue
+                image_url = (data.get("murl") or "").strip()
+                page_url = (data.get("purl") or "").strip()
+                title = (data.get("t") or "").strip()
+                if not image_url or not page_url:
+                    continue
+                results.append({"image_url": image_url, "page_url": page_url, "title": title})
+                if len(results) >= max_results:
+                    break
+        except Exception:
+            return results
+        return results
+
+    def _search_links(self, query, max_results=16):
+        links = self._search_bing(query, max_results=max_results)
+        if links:
+            return links
+
+        ddg_html_url = "https://duckduckgo.com/html/"
+        params = {"q": query}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        try:
+            resp = requests.get(ddg_html_url, params=params, headers=headers, timeout=6)
+            if resp.status_code < 400:
+                html = resp.text
+                for match in re.findall(r'href="([^"]+)"', html, flags=re.IGNORECASE):
+                    if "duckduckgo.com/l/?" in match and "uddg=" in match:
+                        parsed = urlparse(match)
+                        q = parse_qs(parsed.query)
+                        target = unquote((q.get("uddg") or [""])[0]).strip()
+                        if target.startswith(("http://", "https://")):
+                            links.append({"href": target, "title": "", "snippet": ""})
+                    elif match.startswith(("http://", "https://")) and "duckduckgo.com" not in match:
+                        links.append({"href": match, "title": "", "snippet": ""})
+                    if len(links) >= max_results:
+                        break
+        except Exception:
+            pass
+
+        if not links and DDGS is not None:
+            def fetch_ddgs_rows():
+                with DDGS() as ddgs:
+                    return list(ddgs.text(query, backend="lite", max_results=max_results))
+
+            rows = self._run_with_timeout(fetch_ddgs_rows, timeout_seconds=5)
+            for row in rows:
+                href = (row.get("href") or "").strip()
+                title = (row.get("title") or "").strip()
+                snippet = (row.get("body") or "").strip()
+                if href:
+                    links.append({"href": href, "title": title, "snippet": snippet})
+        return links
+
+    def _extract_jsonld_product(self, html):
+        script_matches = re.findall(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        for raw in script_matches:
+            try:
+                cleaned = raw.strip()
+                if not cleaned:
+                    continue
+                data = json.loads(cleaned)
+            except Exception:
+                continue
+            candidates = data if isinstance(data, list) else [data]
+            for node in candidates:
+                if not isinstance(node, dict):
+                    continue
+                node_type = str(node.get("@type", "")).lower()
+                if "product" not in node_type:
+                    continue
+                image = node.get("image")
+                if isinstance(image, list):
+                    image = image[0] if image else ""
+                offers = node.get("offers", {})
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else {}
+                price = offers.get("price") if isinstance(offers, dict) else None
+                currency = offers.get("priceCurrency") if isinstance(offers, dict) else None
+                try:
+                    price = round(float(str(price).replace(",", "")), 2) if price is not None else None
+                except Exception:
+                    price = None
+                return {
+                    "title": (node.get("name") or "")[:180],
+                    "image_url": image or "",
+                    "price": price,
+                    "currency": currency
+                }
+        return None
+
+    def _fetch_og_image(self, page_url):
+        if not page_url.startswith(("http://", "https://")):
+            return ""
+        try:
+            resp = requests.get(
+                page_url,
+                timeout=6,
+                headers={"User-Agent": "Mozilla/5.0"},
+                allow_redirects=True,
+            )
+            if resp.status_code >= 400:
+                return ""
+            html = resp.text[:250000]
+            patterns = [
+                r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+                r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, html, flags=re.IGNORECASE)
+                if match:
+                    return match.group(1).strip()
+        except Exception:
+            return ""
+        return ""
+
+    def _extract_title(self, html):
+        match = re.search(r"<title>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return ""
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", match.group(1))).strip()
+
+    def _extract_price_from_html(self, html):
+        patterns = [
+            r'property=["\']product:price:amount["\']\s+content=["\']([^"\']+)["\']',
+            r'"price"\s*:\s*"([\d,]+(?:\.\d{1,2})?)"',
+            r'"price"\s*:\s*([\d,]+(?:\.\d{1,2})?)',
+        ]
+        currency_patterns = [
+            r'property=["\']product:price:currency["\']\s+content=["\']([^"\']+)["\']',
+            r'"priceCurrency"\s*:\s*"([^"]+)"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html, flags=re.IGNORECASE)
+            if match:
+                raw_price = match.group(1).replace(",", "").strip()
+                try:
+                    price = round(float(raw_price), 2)
+                except Exception:
+                    continue
+                currency = None
+                for cp in currency_patterns:
+                    cm = re.search(cp, html, flags=re.IGNORECASE)
+                    if cm:
+                        currency = cm.group(1).upper().strip()
+                        break
+                return price, currency
+        return None, None
+
+    def _score_candidate(self, candidate, brand, model, attributes):
+        haystack = f"{candidate.get('title', '')} {candidate.get('page_url', '')}".lower()
+        tokens = [t for t in re.split(r"[\s,\-_]+", f"{brand} {model} {attributes}".lower()) if len(t) > 1]
+        score = 0
+        for token in tokens:
+            if token in haystack:
+                score += 4
+        domain = self._normalize_domain(candidate.get("page_url", ""))
+        score += self._preferred_domains.get(domain, 0)
+        if candidate.get("price") is not None:
+            score += 10
+        if candidate.get("image_url", "").lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".avif")):
+            score += 4
+        return score
+
+    def _bing_image_candidates(self, query, price_hints, seen_images, max_add):
+        out = []
+        for item in self._search_bing_images(query, max_results=14):
+            image_url = item.get("image_url", "")
+            page_url = item.get("page_url", "")
+            if not image_url or not page_url or image_url in seen_images:
+                continue
+            domain = self._normalize_domain(page_url)
+            if any(blocked in domain for blocked in self._blocked_domains):
+                continue
+            seen_images.add(image_url)
+            price = None
+            currency = None
+            source_url = page_url
+            for hint in price_hints:
+                if hint["domain"] and hint["domain"] == domain:
+                    price = hint["price"]
+                    currency = hint["currency"]
+                    source_url = hint["source_url"] or page_url
+                    break
+            out.append({
+                "title": (item.get("title") or "")[:180],
+                "image_url": image_url,
+                "page_url": page_url,
+                "source_url": source_url,
+                "price": price,
+                "currency": currency
+            })
+            if len(out) >= max_add:
+                break
+        return out
+
+    def search(self, brand, model, attributes):
+        base_query = f"{brand} {model} knife".strip()
+        full_query = f"{base_query} {attributes}".strip()
+        cache_key = f"{brand.lower()}|{model.lower()}|{attributes.lower()}"
+        cached = self._from_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        deadline = time.monotonic() + 18.0
+        price_hints = self._quick_price_hints(brand, model)
+        candidates = []
+        seen_images = set()
+
+        for q in (full_query, base_query):
+            if time.monotonic() > deadline or len(candidates) >= 8:
+                break
+            candidates.extend(self._bing_image_candidates(q, price_hints, seen_images, 8 - len(candidates)))
+
+        if len(candidates) < 6 and time.monotonic() < deadline:
+            rows = self._search_links(full_query, max_results=14)
+            for row in rows[:10]:
+                if time.monotonic() > deadline:
+                    break
+                page_url = (row.get("href") or "").strip()
+                if not page_url.startswith(("http://", "https://")):
+                    continue
+                domain = self._normalize_domain(page_url)
+                if any(blocked in domain for blocked in self._blocked_domains):
+                    continue
+                try:
+                    resp = requests.get(page_url, timeout=4, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+                    if resp.status_code >= 400:
+                        continue
+                    html = resp.text[:200000]
+                except Exception:
+                    continue
+                product = self._extract_jsonld_product(html)
+                title = (row.get("title") or self._extract_title(html))
+                image_url = ""
+                price = None
+                currency = None
+                if product:
+                    title = product.get("title") or title
+                    image_url = product.get("image_url") or ""
+                    price = product.get("price")
+                    currency = product.get("currency")
+                if not image_url:
+                    image_url = self._fetch_og_image(page_url)
+                if not image_url or image_url in seen_images:
+                    continue
+                seen_images.add(image_url)
+                source_url = page_url
+                if price is None:
+                    page_price, page_currency = self._extract_price_from_html(html)
+                    if page_price is not None:
+                        price = page_price
+                        currency = page_currency
+                if price is None:
+                    for hint in price_hints:
+                        if hint["domain"] and hint["domain"] == domain:
+                            price = hint["price"]
+                            currency = hint["currency"]
+                            source_url = hint["source_url"] or page_url
+                            break
+                candidates.append({
+                    "title": (title or "")[:180],
+                    "image_url": image_url,
+                    "page_url": page_url,
+                    "source_url": source_url,
+                    "price": price,
+                    "currency": currency
+                })
+                if len(candidates) >= 12:
+                    break
+
+        if not candidates:
+            raise RuntimeError("No good candidates found. Try different attributes (e.g. blade shape or handle material).")
+
+        for c in candidates:
+            c["score"] = self._score_candidate(c, brand, model, attributes)
+        candidates = sorted(candidates, key=lambda c: c["score"], reverse=True)[:8]
+        for c in candidates:
+            c.pop("score", None)
+        self._save_cache(cache_key, candidates)
+        return candidates
+
+
+knife_auto_lookup_service = KnifeAutoLookupService()
 
 def init_db():
     with closing(get_db_connection()) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS knives (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,7 +630,8 @@ def init_db():
                 msrp_new_price REAL NOT NULL DEFAULT 0,
                 cost_price REAL NOT NULL DEFAULT 0,
                 sale_price REAL NOT NULL DEFAULT 0,
-                price_confidence TEXT DEFAULT 'low'
+                price_confidence TEXT DEFAULT 'low',
+                is_featured INTEGER DEFAULT 0
             )
         """)
         conn.execute("""
@@ -90,6 +643,98 @@ def init_db():
                 is_admin INTEGER DEFAULT 0
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_email TEXT NOT NULL,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER,
+                details TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        # Initialize default settings
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('landing_page_enabled', '1')")
+        
+        # Migration: Add is_featured if it doesn't exist
+        try:
+            conn.execute("ALTER TABLE knives ADD COLUMN is_featured INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass # Column already exists
+            
+        conn.commit()
+
+def get_setting(key, default=None):
+    with closing(get_db_connection()) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row['value'] if row else default
+
+def set_setting(key, value):
+    with closing(get_db_connection()) as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+        conn.commit()
+
+
+def create_csrf_token():
+    token = secrets.token_urlsafe(32)
+    session["csrf_token"] = token
+    return token
+
+
+def get_csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = create_csrf_token()
+    return token
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": get_csrf_token()}
+
+
+def verify_csrf():
+    should_verify = request.path.startswith("/admin/") or request.is_json
+    if should_verify and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
+        expected = session.get("csrf_token")
+        if not expected or not submitted or not secrets.compare_digest(submitted, expected):
+            return False
+    return True
+
+
+@app.before_request
+def csrf_protect():
+    if not verify_csrf():
+        if request.path.startswith("/admin/") or request.is_json:
+            return jsonify({"error": "CSRF validation failed"}), 400
+        flash("Security validation failed. Please retry.", "error")
+        return redirect(request.referrer or url_for("index"))
+
+
+@app.after_request
+def apply_security_headers(response):
+    return app_security_service.add_security_headers(response)
+
+
+def write_audit_log(action, entity_type, entity_id=None, details=""):
+    actor = current_user.email if current_user.is_authenticated else "anonymous"
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    with closing(get_db_connection()) as conn:
+        conn.execute(
+            """
+            INSERT INTO audit_logs (user_email, action, entity_type, entity_id, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (actor, action, entity_type, entity_id, details, now),
+        )
         conn.commit()
 
 init_db()
@@ -141,7 +786,7 @@ def register():
     if current_user.is_authenticated:
         return redirect(url_for('index'))
     if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
+        email = knife_input_service.clean_text(request.form.get("email", "")).lower()
         password = request.form.get("password", "")
         
         if not email or not password:
@@ -173,7 +818,12 @@ def login():
     if current_user.is_authenticated:
         return redirect(url_for('index'))
     if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
+        client_ip = app_security_service.client_ip()
+        if not login_rate_limiter.is_allowed(client_ip):
+            flash("Too many login attempts. Please wait a few minutes and try again.", "error")
+            return redirect(url_for("login"))
+
+        email = knife_input_service.clean_text(request.form.get("email", "")).lower()
         password = request.form.get("password", "")
         remember = request.form.get("remember") == "on"
         
@@ -182,6 +832,7 @@ def login():
         conn.close()
         
         if user_row and user_row['password_hash'] and bcrypt.check_password_hash(user_row['password_hash'], password):
+            login_rate_limiter.clear_failures(client_ip)
             user = User(user_row['id'], user_row['email'], user_row['password_hash'], user_row['google_id'], user_row['is_admin'])
             login_user(user, remember=remember)
             next_url = request.form.get('next') or request.args.get('next')
@@ -189,6 +840,7 @@ def login():
                 return redirect(next_url)
             return redirect(url_for("admin_dashboard") if user.email == ADMIN_EMAIL or user.is_admin else url_for("index"))
         else:
+            login_rate_limiter.register_failure(client_ip)
             flash("Invalid email or password.", "error")
             
     return render_template("login.html")
@@ -201,15 +853,21 @@ def logout():
 
 @app.route("/login/google")
 def login_google():
-    if not app.config.get('GOOGLE_CLIENT_ID') or not app.config.get('GOOGLE_CLIENT_SECRET'):
+    client = google_oauth_service.get_client()
+    if not client:
         flash("Google Login is not fully configured (missing credentials).", "error")
         return redirect(url_for('login'))
-        
-    redirect_uri = url_for('authorize_google', _external=True)
-    return google.authorize_redirect(redirect_uri)
+
+    redirect_uri = app.config.get('GOOGLE_REDIRECT_URI') or url_for('authorize_google', _external=True)
+    return client.authorize_redirect(redirect_uri)
 
 @app.route("/authorize/google")
 def authorize_google():
+    client = google_oauth_service.get_client()
+    if not client:
+        flash("Google Login is not fully configured (missing credentials).", "error")
+        return redirect(url_for('login'))
+
     # Handle user cancelling the Google consent screen
     error = request.args.get('error')
     if error:
@@ -217,14 +875,25 @@ def authorize_google():
         return redirect(url_for('login'))
 
     try:
-        token = google.authorize_access_token()
+        token = client.authorize_access_token()
     except Exception as e:
         flash("Google login failed. Please try again.", "error")
         return redirect(url_for('login'))
 
     user_info = token.get('userinfo')
+    if not user_info:
+        try:
+            user_info = client.userinfo()
+        except Exception:
+            user_info = None
+    if not user_info:
+        try:
+            user_info = client.parse_id_token(token)
+        except Exception:
+            user_info = None
     
-    if not user_info or not user_info.get('email_verified', False):
+    email_verified = bool(user_info and user_info.get('email_verified', False))
+    if not user_info or not user_info.get('email') or not email_verified:
         flash("Could not verify your Google account email.", "error")
         return redirect(url_for('login'))
 
@@ -254,10 +923,17 @@ def authorize_google():
         
     conn.close()
     login_user(user, remember=True)  # Auto remember on Google login
+    login_rate_limiter.clear_failures(app_security_service.client_ip())
     
     if user.is_admin or email == ADMIN_EMAIL:
         return redirect(url_for('admin_dashboard'))
     return redirect(url_for('index'))
+
+
+@app.route("/health")
+def health():
+    return jsonify({"ok": True}), 200
+
 
 # -----------------------------------------------------
 # PUBLIC STOREFRONT
@@ -265,8 +941,11 @@ def authorize_google():
 
 @app.route("/", methods=["GET"])
 def index():
+    if get_setting('landing_page_enabled') == '0':
+        return redirect(url_for('collection'))
+        
     conn = get_db_connection()
-    featured = conn.execute("SELECT * FROM knives ORDER BY id DESC LIMIT 4").fetchall()
+    featured = conn.execute("SELECT * FROM knives WHERE is_featured = 1 ORDER BY id DESC").fetchall()
     conn.close()
     return render_template("index.html", featured_knives=featured)
 
@@ -366,12 +1045,15 @@ def admin_dashboard():
 
     conn.close()
 
+    landing_page_enabled = get_setting('landing_page_enabled', '1') == '1'
+
     return render_template(
         "admin_dashboard.html",
         totals=totals,
         counts=counts,
         status_counts=status_counts,
-        pricing_stats=pricing_stats
+        pricing_stats=pricing_stats,
+        landing_page_enabled=landing_page_enabled
     )
 
 
@@ -428,10 +1110,12 @@ def admin_edit_knife(knife_id):
 @app.route("/admin/knives/<int:knife_id>/delete", methods=["POST"])
 @admin_required
 def admin_delete_knife(knife_id):
+    write_audit_log("delete_attempt", "knife", knife_id)
     conn = get_db_connection()
     conn.execute("DELETE FROM knives WHERE id = ?", (knife_id,))
     conn.commit()
     conn.close()
+    write_audit_log("delete", "knife", knife_id)
     return redirect(url_for("admin_knives"))
 
 
@@ -488,9 +1172,9 @@ def admin_inventory():
 @app.route("/admin/inventory/update-status", methods=["POST"])
 @admin_required
 def admin_update_status():
-    data = request.get_json()
-    knife_id = data.get("id")
-    new_status = data.get("status")
+    data = request.get_json() or {}
+    knife_id = knife_input_service.clean_int(data.get("id"), fallback=0, minimum=1)
+    new_status = knife_input_service.normalize_status(data.get("status"))
     valid_statuses = [s["key"] for s in STATUSES]
     if not knife_id or new_status not in valid_statuses:
         return jsonify({"error": "Invalid"}), 400
@@ -498,24 +1182,56 @@ def admin_update_status():
     conn.execute("UPDATE knives SET status = ? WHERE id = ?", (new_status, knife_id))
     conn.commit()
     conn.close()
+    write_audit_log("status_update", "knife", knife_id, f"status={new_status}")
     return jsonify({"ok": True, "id": knife_id, "status": new_status})
 
 
 @app.route("/admin/inventory/update-quantity", methods=["POST"])
 @admin_required
 def admin_update_quantity():
-    data = request.get_json()
-    knife_id = data.get("id")
-    quantity = data.get("quantity")
-    try:
-        quantity = max(1, int(quantity))
-    except (TypeError, ValueError):
+    data = request.get_json() or {}
+    knife_id = knife_input_service.clean_int(data.get("id"), fallback=0, minimum=1)
+    quantity = knife_input_service.clean_int(data.get("quantity"), fallback=0, minimum=1)
+    if not knife_id or not quantity:
         return jsonify({"error": "Invalid quantity"}), 400
     conn = get_db_connection()
     conn.execute("UPDATE knives SET quantity = ? WHERE id = ?", (quantity, knife_id))
     conn.commit()
     conn.close()
+    write_audit_log("quantity_update", "knife", knife_id, f"quantity={quantity}")
     return jsonify({"ok": True, "id": knife_id, "quantity": quantity})
+
+
+@app.route("/admin/settings/toggle-landing", methods=["POST"])
+@admin_required
+def admin_toggle_landing():
+    current = get_setting('landing_page_enabled', '1')
+    new_val = '0' if current == '1' else '1'
+    set_setting('landing_page_enabled', new_val)
+    write_audit_log("landing_toggle", "settings", None, f"landing_page_enabled={new_val}")
+    return jsonify({"ok": True, "enabled": new_val == '1'})
+
+
+@app.route("/admin/knives/toggle-featured", methods=["POST"])
+@admin_required
+def admin_toggle_featured():
+    data = request.get_json() or {}
+    knife_id = knife_input_service.clean_int(data.get("id"), fallback=0, minimum=1)
+    if not knife_id:
+        return jsonify({"error": "Missing ID"}), 400
+        
+    conn = get_db_connection()
+    knife = conn.execute("SELECT is_featured FROM knives WHERE id = ?", (knife_id,)).fetchone()
+    if not knife:
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+        
+    new_status = 1 if not knife['is_featured'] else 0
+    conn.execute("UPDATE knives SET is_featured = ? WHERE id = ?", (new_status, knife_id))
+    conn.commit()
+    conn.close()
+    write_audit_log("featured_toggle", "knife", knife_id, f"is_featured={new_status}")
+    return jsonify({"ok": True, "id": knife_id, "is_featured": bool(new_status)})
 
 
 # -----------------------------------------------------
@@ -528,7 +1244,7 @@ def admin_update_quantity():
 @admin_required
 def api_upload_clipboard():
     """Handle pasted image from clipboard (base64 data)."""
-    data = request.get_json()
+    data = request.get_json() or {}
     if not data or 'image_data' not in data:
         return jsonify({"error": "No image data"}), 400
 
@@ -552,6 +1268,7 @@ def api_upload_clipboard():
         with open(filepath, 'wb') as f:
             f.write(img_bytes)
 
+        write_audit_log("image_upload_clipboard", "media", None, f"filename={filename}")
         return jsonify({
             "success": True,
             "filename": filename,
@@ -565,11 +1282,11 @@ def api_upload_clipboard():
 @admin_required
 def api_upload_url():
     """Download an image from a URL and store it locally."""
-    data = request.get_json()
+    data = request.get_json() or {}
     if not data or 'url' not in data:
         return jsonify({"error": "No URL provided"}), 400
 
-    image_url = data['url'].strip()
+    image_url = knife_input_service.clean_url(data.get("url"))
     if not image_url.startswith(('http://', 'https://')):
         return jsonify({"error": "Invalid URL"}), 400
 
@@ -602,6 +1319,7 @@ def api_upload_url():
         with open(filepath, 'wb') as f:
             f.write(img_bytes)
 
+        write_audit_log("image_upload_url", "media", None, f"filename={filename}")
         return jsonify({
             "success": True,
             "filename": filename,
@@ -610,6 +1328,28 @@ def api_upload_url():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/api/auto-search", methods=["POST"])
+@admin_required
+def api_auto_search():
+    data = request.get_json() or {}
+    brand = knife_input_service.clean_text(data.get("brand", ""))
+    model = knife_input_service.clean_text(data.get("model", ""))
+    attributes = knife_input_service.clean_text(data.get("attributes", ""))
+    if not brand or not model:
+        return jsonify({"error": "Brand and model are required"}), 400
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(knife_auto_lookup_service.search, brand, model, attributes)
+            try:
+                candidates = fut.result(timeout=22)
+            except concurrent.futures.TimeoutError:
+                return jsonify({"ok": False, "error": "Search timed out. Try again or use shorter keywords."}), 504
+        write_audit_log("auto_search", "knife", None, f"query={brand} {model} {attributes};count={len(candidates)}")
+        return jsonify({"ok": True, "candidates": candidates})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # -----------------------------------------------------
@@ -628,13 +1368,13 @@ def admin_bulk_pricing():
 @app.route("/admin/bulk-pricing/apply", methods=["POST"])
 @admin_required
 def admin_bulk_pricing_apply():
-    mode = request.form.get("mode", "")
+    mode = knife_input_service.clean_text(request.form.get("mode", ""))
     amount = request.form.get("amount", "0")
     knife_ids = request.form.getlist("knife_ids")
 
     try:
-        amount = float(amount)
-    except ValueError:
+        amount = knife_input_service.clean_float(amount)
+    except Exception:
         flash("Invalid amount value.")
         return redirect(url_for("admin_bulk_pricing"))
 
@@ -673,6 +1413,7 @@ def admin_bulk_pricing_apply():
 
     conn.commit()
     conn.close()
+    write_audit_log("bulk_pricing", "knife", None, f"mode={mode};amount={amount};updated={updated}")
     flash(f"Updated sale price for {updated} knives.")
     return redirect(url_for("admin_bulk_pricing"))
 
@@ -736,27 +1477,24 @@ def admin_export():
 # -----------------------------------------------------
 
 def _handle_admin_save(req, knife_id=None, existing_knife=None):
-    brand = req.form.get("brand", "").strip()
-    model = req.form.get("model", "").strip()
-    category = req.form.get("category", "").strip()
-    status = req.form.get("status", "home").strip()
-    description = req.form.get("description", "").strip()
-    notes = req.form.get("notes", "").strip()
+    brand = knife_input_service.clean_text(req.form.get("brand", ""))
+    model = knife_input_service.clean_text(req.form.get("model", ""))
+    category = knife_input_service.clean_text(req.form.get("category", ""))
+    status = knife_input_service.normalize_status(req.form.get("status", "home"))
+    description = knife_input_service.clean_text(req.form.get("description", ""))
+    notes = knife_input_service.clean_text(req.form.get("notes", ""))
+    is_featured = 1 if req.form.get("is_featured") == "on" else 0
 
-    image_source_url = req.form.get("image_source_url", "").strip()
-    price_source_url = req.form.get("price_source_url", "").strip()
-    data_confidence = req.form.get("data_confidence", "low").strip()
-    price_confidence = req.form.get("price_confidence", "low").strip()
+    image_source_url = knife_input_service.clean_url(req.form.get("image_source_url", ""))
+    price_source_url = knife_input_service.clean_url(req.form.get("price_source_url", ""))
+    data_confidence = knife_input_service.normalize_confidence(req.form.get("data_confidence", "low"))
+    price_confidence = knife_input_service.normalize_confidence(req.form.get("price_confidence", "low"))
 
-    def safe_float(field, default=0.0):
-        try: return float(req.form.get(field, str(default)).strip())
-        except ValueError: return default
-
-    msrp_new_price = safe_float("msrp_new_price")
-    cost_price = safe_float("cost_price")
-    sale_price = safe_float("sale_price")
+    msrp_new_price = knife_input_service.clean_float(req.form.get("msrp_new_price", 0))
+    cost_price = knife_input_service.clean_float(req.form.get("cost_price", 0))
+    sale_price = knife_input_service.clean_float(req.form.get("sale_price", 0))
     
-    currency = req.form.get("currency", "ILS").strip()
+    currency = knife_input_service.clean_text(req.form.get("currency", "ILS"))
     if currency == "USD":
         # Convert to ILS (Approximate rate: 3.2)
         msrp_new_price = round(msrp_new_price * 3.2, 2)
@@ -765,10 +1503,11 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
     buy_price = cost_price
     estimated_value = msrp_new_price
 
-    try: 
-        quantity = int(req.form.get("quantity", "1").strip())
-        if quantity < 1: quantity = 1
-    except ValueError: quantity = 1
+    quantity = knife_input_service.clean_int(req.form.get("quantity", 1), fallback=1, minimum=1)
+
+    if not brand or not model:
+        flash("Brand and model are required.", "error")
+        return redirect(request.url)
 
     # ── Image Handling ──
     # Priority: remove > new upload > hidden (from clipboard/URL JS) > existing
@@ -794,30 +1533,42 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
             filename = js_filename
 
     conn = get_db_connection()
+    audit_action = ""
+    audit_entity_id = knife_id
+    audit_details = f"{brand} {model}"
     if knife_id is None:
-        conn.execute("""
+        cur = conn.execute("""
             INSERT INTO knives (brand, model, category, status, buy_price, estimated_value, quantity, notes, image, description,
                 image_url, image_source_url, price_source_url, data_confidence,
-                msrp_new_price, cost_price, sale_price, price_confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                msrp_new_price, cost_price, sale_price, price_confidence, is_featured)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (brand, model, category, status, buy_price, estimated_value, quantity, notes, filename, description,
               image_url, image_source_url, price_source_url, data_confidence,
-              msrp_new_price, cost_price, sale_price, price_confidence))
+              msrp_new_price, cost_price, sale_price, price_confidence, is_featured))
+        audit_action = "create"
+        audit_entity_id = cur.lastrowid
     else:
         conn.execute("""
             UPDATE knives
             SET brand=?, model=?, category=?, status=?, buy_price=?, estimated_value=?, quantity=?, notes=?, image=?, description=?,
                 image_url=?, image_source_url=?, price_source_url=?, data_confidence=?,
-                msrp_new_price=?, cost_price=?, sale_price=?, price_confidence=?
+                msrp_new_price=?, cost_price=?, sale_price=?, price_confidence=?, is_featured=?
             WHERE id = ?
         """, (brand, model, category, status, buy_price, estimated_value, quantity, notes, filename, description,
               image_url, image_source_url, price_source_url, data_confidence,
-              msrp_new_price, cost_price, sale_price, price_confidence, knife_id))
+              msrp_new_price, cost_price, sale_price, price_confidence, is_featured, knife_id))
+        audit_action = "update"
     conn.commit()
     conn.close()
+    if audit_action:
+        write_audit_log(audit_action, "knife", audit_entity_id, audit_details)
 
     return redirect(url_for("admin_knives"))
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        host=os.getenv("FLASK_HOST", "127.0.0.1"),
+        port=int(os.getenv("FLASK_PORT", "5000")),
+        debug=os.getenv("FLASK_DEBUG", "0").strip() == "1",
+    )

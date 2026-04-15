@@ -325,7 +325,7 @@ function showToast(msg, color) {
 }
 
 function setStatus(knifeId, newStatus) {
-    fetch('/admin/inventory/update-status', {
+    apiFetch('/admin/inventory/update-status', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id: knifeId, status: newStatus})
@@ -373,7 +373,7 @@ function changeQty(knifeId, delta) {
     // Optimistic update — debounce the fetch
     clearTimeout(el._timer);
     el._timer = setTimeout(() => {
-        fetch('/admin/inventory/update-quantity', {
+        apiFetch('/admin/inventory/update-quantity', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({id: knifeId, quantity: next})

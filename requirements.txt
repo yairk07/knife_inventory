@@ -10,6 +10,7 @@ cryptography==46.0.7
 Flask==3.1.3
 Flask-Bcrypt==1.0.1
 Flask-Login==0.6.3
+duckduckgo-search
 idna==3.11
 itsdangerous==2.2.0
 Jinja2==3.1.6
@@ -20,3 +21,4 @@ python-dotenv==1.2.2
 requests==2.33.1
 urllib3==2.6.3
 Werkzeug==3.1.8
+gunicorn==23.0.0
