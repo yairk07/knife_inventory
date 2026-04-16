@@ -3,14 +3,14 @@
 {% block content %}
 <section class="hero">
     <div class="container">
-        <h1>Precision Engineered</h1>
-        <p>Explore our curated collection of premium folding, fixed blade, and tactical tools.</p>
-        <a href="{{ url_for('collection') }}" class="btn-primary">Shop Collection</a>
+        <h1>{{ tr('hero_title') }}</h1>
+        <p>{{ tr('hero_subtitle') }}</p>
+        <a href="{{ url_for('collection') }}" class="btn-primary">{{ tr('hero_cta') }}</a>
     </div>
 </section>
 
 <section class="container">
-    <h2 class="section-title">Featured Gear</h2>
+    <h2 class="section-title">{{ tr('section_featured') }}</h2>
     
     <div class="product-grid">
         {% for knife in featured_knives %}
@@ -21,7 +21,7 @@
                 <img src="{{ url_for('static', filename='uploads/' ~ knife.image) }}" alt="{{ knife.model }}" class="product-image">
             {% else %}
                 <div class="brand-logo-placeholder" data-brand="{{ knife.brand }}">
-                    {% if knife.brand and knife.brand.lower() not in ["none", "unknown"] %}{{ knife.brand }}{% else %}NO IMAGE{% endif %}
+                    {% if knife.brand and knife.brand.lower() not in ["none", "unknown"] %}{{ knife.brand }}{% else %}{{ tr('no_image') }}{% endif %}
                 </div>
             {% endif %}
             
@@ -31,18 +31,14 @@
                 <div class="product-price">
                     {% if knife.sale_price and knife.sale_price > 0 %}
                         ₪{{ "%.2f"|format(knife.sale_price) }}
-                    {% elif knife.msrp_new_price and knife.msrp_new_price > 0 %}
-                        ₪{{ "%.2f"|format(knife.msrp_new_price) }}
-                    {% elif knife.cost_price and knife.cost_price > 0 %}
-                        ₪{{ "%.2f"|format(knife.cost_price) }}
                     {% else %}
-                        N/A
+                        <span style="font-size: 0.85rem; color: var(--text-muted);">{{ tr('price_on_request') }}</span>
                     {% endif %}
                 </div>
             </div>
         </a>
         {% else %}
-        <p style="text-align: center; color: var(--text-muted); grid-column: 1/-1;">No featured items right now.</p>
+        <p style="text-align: center; color: var(--text-muted); grid-column: 1/-1;">{{ tr('no_featured') }}</p>
         {% endfor %}
     </div>
 </section>

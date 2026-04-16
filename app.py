@@ -15,12 +15,14 @@ from functools import wraps
 from collections import defaultdict, deque
 from urllib.parse import urlparse, parse_qs, unquote
 import requests
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, make_response
 from werkzeug.utils import secure_filename
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
 from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
+from storefront_locale import storefront_locale_service
+from knife_finder_service import KnifeFinderService
 try:
     from ddgs import DDGS
 except ImportError:
@@ -678,6 +680,10 @@ def init_db():
                     conn.execute("ALTER TABLE knives ADD COLUMN is_featured INTEGER DEFAULT 0")
                 except sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute("ALTER TABLE knives ADD COLUMN blade_metals TEXT DEFAULT '[]'")
+                except sqlite3.OperationalError:
+                    pass
                 conn.commit()
             return
         except sqlite3.OperationalError as err:
@@ -712,6 +718,20 @@ def get_csrf_token():
 @app.context_processor
 def inject_csrf_token():
     return {"csrf_token": get_csrf_token()}
+
+
+@app.context_processor
+def inject_storefront_i18n():
+    lang = storefront_locale_service.get_lang()
+
+    def tr(key):
+        return storefront_locale_service.translate(key, lang)
+
+    return {
+        "ui_lang": lang,
+        "ui_dir": "rtl" if lang == "he" else "ltr",
+        "tr": tr,
+    }
 
 
 def verify_csrf():
@@ -949,6 +969,26 @@ def health():
     return jsonify({"ok": True}), 200
 
 
+@app.route("/set-lang/<code>")
+def set_site_language(code):
+    code = (code or "").strip().lower()
+    if code not in ("en", "he"):
+        code = "en"
+    next_url = request.args.get("next") or url_for("index")
+    safe = storefront_locale_service.safe_internal_path(next_url)
+    target = safe if safe else url_for("index")
+    resp = make_response(redirect(target))
+    resp.set_cookie(
+        storefront_locale_service.COOKIE,
+        code,
+        max_age=storefront_locale_service.COOKIE_MAX_AGE,
+        httponly=False,
+        samesite="Lax",
+        path="/",
+    )
+    return resp
+
+
 # -----------------------------------------------------
 # PUBLIC STOREFRONT
 # -----------------------------------------------------
@@ -1015,6 +1055,49 @@ def product(knife_id):
     if knife is None:
         return redirect(url_for("collection"))
     return render_template("product.html", knife=knife)
+
+
+def _finder_knife_image_src(row):
+    url = (row["image_url"] or "").strip()
+    if url:
+        return url
+    img = (row["image"] or "").strip()
+    if img:
+        return url_for("static", filename=f"uploads/{img}")
+    return ""
+
+
+@app.route("/find-knife", methods=["GET"])
+def find_knife():
+    return render_template("finder.html", finder_questions=KnifeFinderService.QUESTIONS)
+
+
+@app.route("/find-knife/match", methods=["POST"])
+def find_knife_match():
+    payload = request.get_json(silent=True) or {}
+    answers = {k: payload.get(k) for k in ("use", "blade", "budget", "steel", "size")}
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT id, brand, model, category, description, sale_price, msrp_new_price,
+               status, quantity, image, image_url, is_featured, blade_metals
+        FROM knives
+        """
+    ).fetchall()
+    conn.close()
+    picked = KnifeFinderService.recommend(rows, answers, limit=3)
+    cards = []
+    for row in picked:
+        cards.append(
+            {
+                "id": row["id"],
+                "brand": row["brand"] or "",
+                "model": row["model"] or "",
+                "image": _finder_knife_image_src(row),
+                "url": url_for("product", knife_id=row["id"]),
+            }
+        )
+    return jsonify({"knives": cards})
 
 
 # -----------------------------------------------------

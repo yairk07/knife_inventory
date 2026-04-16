@@ -3,28 +3,28 @@
 {% block content %}
 <div class="container" style="max-width: 400px; margin: 60px auto 0 auto;">
     <div class="card" style="padding: 40px;">
-        <h2 style="text-align: center; margin-bottom: 25px; color: var(--primary);">Create Account</h2>
+        <h2 style="text-align: center; margin-bottom: 25px; color: var(--primary);">{{ tr('register_title') }}</h2>
         
         <form method="POST" action="{{ url_for('register') }}">
             <div style="margin-bottom: 20px;">
-                <label style="display: block; font-weight: 500; font-size: 0.9rem; margin-bottom: 8px;">Email Address</label>
+                <label style="display: block; font-weight: 500; font-size: 0.9rem; margin-bottom: 8px;">{{ tr('register_email') }}</label>
                 <input type="email" name="email" required style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: #111620; color: #fff;">
             </div>
             
             <div style="margin-bottom: 12px;">
-                <label style="display: block; font-weight: 500; font-size: 0.9rem; margin-bottom: 8px;">Password</label>
+                <label style="display: block; font-weight: 500; font-size: 0.9rem; margin-bottom: 8px;">{{ tr('password') }}</label>
                 <input type="password" name="password" id="registerPassword" required autocomplete="new-password" style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: #111620; color: #fff;">
             </div>
             <div style="margin-bottom: 25px; display: flex; align-items: center; gap: 8px;">
                 <input type="checkbox" id="registerShowPassword" style="width: 16px; height: 16px; accent-color: var(--primary);">
-                <label for="registerShowPassword" style="font-size: 0.9rem; color: var(--text-muted); cursor: pointer;">Show password</label>
+                <label for="registerShowPassword" style="font-size: 0.9rem; color: var(--text-muted); cursor: pointer;">{{ tr('show_password') }}</label>
             </div>
             
-            <button type="submit" class="btn" style="width: 100%; padding: 12px; font-size: 1rem; border-radius: 6px;">Register</button>
+            <button type="submit" class="btn" style="width: 100%; padding: 12px; font-size: 1rem; border-radius: 6px;">{{ tr('register_submit') }}</button>
         </form>
 
         <p style="text-align: center; margin-top: 25px; font-size: 0.9rem; color: var(--text-muted);">
-            Already have an account? <a href="{{ url_for('login') }}" style="color: var(--primary); text-decoration: none;">Sign in here</a>
+            {{ tr('register_has_account') }} <a href="{{ url_for('login') }}" style="color: var(--primary); text-decoration: none;">{{ tr('register_signin_link') }}</a>
         </p>
     </div>
 </div>

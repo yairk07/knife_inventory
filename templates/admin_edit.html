@@ -91,12 +91,17 @@
             <div style="display: flex; gap: 8px; align-items: end; flex-wrap: wrap;">
                 <div style="min-width: 220px; flex: 1;">
                     <label style="display: block; font-weight: 500; margin-bottom: 5px;">Auto search attributes</label>
-                    <input type="text" id="autoAttributes" placeholder="black, carbon fiber handle, tanto" style="width: 100%; padding: 10px;">
+                    <input type="text" id="autoAttributes" placeholder="tanto, black G10, M390 or MagnaCut, carbon fiber handle" style="width: 100%; padding: 10px;">
                 </div>
                 <button type="button" class="btn" id="autoSearchBtn" onclick="runAutoSearch()">Auto Fetch Image + Price</button>
             </div>
-            <p id="autoSearchStatus" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 8px;">Searches web candidates by brand/model and lets you pick.</p>
+            <p id="autoSearchStatus" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 8px;">This field is used for image/price search <strong>and</strong> blade-steel hints (same text is searched and scanned for steel names).</p>
             <div id="autoResults" style="display: none; margin-top: 12px; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));"></div>
+            <div id="metalCandidateBox" style="display: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);">
+                <label style="display: block; font-weight: 500; margin-bottom: 6px;">Blade steel from web (check all that apply)</label>
+                <div id="metalCandidateList" style="max-height: 220px; overflow: auto;"></div>
+                <button type="button" class="btn" id="addSelectedMetalsBtn" style="margin-top: 10px; font-size: 0.85rem;">Add checked steels to list</button>
+            </div>
         </div>
         
         <!-- Hidden fields for image handling -->
@@ -156,6 +161,24 @@
 
         <!-- SECTION: Details -->
         <h3 style="color: var(--primary); border-bottom: 1px solid var(--border); padding-bottom: 10px; font-size: 1rem; letter-spacing: 1px;">DETAILS</h3>
+        <div style="background: #0f141e; border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 16px;">
+            <label style="display: block; font-weight: 500; margin-bottom: 6px;">Blade steels on this knife</label>
+            <div id="bladeMetalChips" style="min-height: 32px; margin-bottom: 10px;"></div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                <input type="text" id="bladeMetalCustom" placeholder="e.g. MagnaCut, M390" style="flex: 1; min-width: 160px; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
+                <button type="button" class="btn" onclick="addManualBladeMetal()">Add</button>
+            </div>
+            <input type="hidden" name="blade_metals" id="bladeMetalsJson" value="{% if knife and knife['blade_metals'] %}{{ knife['blade_metals']|e }}{% else %}[]{% endif %}">
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 12px;">Steels you already saved on other knives (tap to suggest here — small shared list):</p>
+            <div id="steelCatalogHintBar" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                {% for h in steel_catalog_hints %}
+                <button type="button" class="btn steel-catalog-hint" data-steel="{{ h.steel|e }}" style="font-size: 0.75rem; padding: 6px 10px;">{{ h.steel }} ({{ h.other_knives }})</button>
+                {% endfor %}
+                {% if not steel_catalog_hints %}
+                <span style="font-size: 0.78rem; color: var(--text-muted);">None yet — tag steels on a few knives first.</span>
+                {% endif %}
+            </div>
+        </div>
         <div>
             <label style="display: block; font-weight: 500; margin-bottom: 5px;">Public Description</label>
             <textarea name="description" rows="3" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px;">{{ knife.description if knife else '' }}</textarea>
@@ -177,6 +200,110 @@
 </div>
 
 <script>
+let bladeMetalsList = [];
+
+function bladeMetalsFromHidden() {
+    const el = document.getElementById('bladeMetalsJson');
+    if (!el) return [];
+    try {
+        const a = JSON.parse(el.value || '[]');
+        return Array.isArray(a) ? a.slice() : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function syncBladeMetalsHidden() {
+    const el = document.getElementById('bladeMetalsJson');
+    if (el) el.value = JSON.stringify(bladeMetalsList);
+    renderBladeMetalChips();
+}
+
+function renderBladeMetalChips() {
+    const box = document.getElementById('bladeMetalChips');
+    if (!box) return;
+    box.innerHTML = '';
+    bladeMetalsList.forEach((m) => {
+        const tag = document.createElement('span');
+        tag.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 10px;margin:4px;background:#1e293b;border:1px solid var(--border);border-radius:999px;font-size:0.85rem;';
+        tag.appendChild(document.createTextNode(m));
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.textContent = '×';
+        x.style.cssText = 'background:none;border:none;color:#f87171;cursor:pointer;font-size:1.1rem;line-height:1;padding:0 4px;';
+        x.addEventListener('click', () => removeBladeMetal(m));
+        tag.appendChild(x);
+        box.appendChild(tag);
+    });
+}
+
+function removeBladeMetal(m) {
+    bladeMetalsList = bladeMetalsList.filter((x) => x !== m);
+    syncBladeMetalsHidden();
+}
+
+function addBladeMetalRaw(name) {
+    const s = (name || '').trim();
+    if (!s || s.length > 80) return;
+    const low = s.toLowerCase();
+    if (bladeMetalsList.some((x) => x.toLowerCase() === low)) return;
+    if (bladeMetalsList.length >= 24) return;
+    bladeMetalsList.push(s);
+    syncBladeMetalsHidden();
+}
+
+function addManualBladeMetal() {
+    const inp = document.getElementById('bladeMetalCustom');
+    if (inp) addBladeMetalRaw(inp.value);
+    if (inp) inp.value = '';
+}
+
+function initBladeMetalsFromForm() {
+    bladeMetalsList = bladeMetalsFromHidden();
+    renderBladeMetalChips();
+}
+
+function renderMetalCandidates(items) {
+    const wrap = document.getElementById('metalCandidateBox');
+    const list = document.getElementById('metalCandidateList');
+    if (!wrap || !list) return;
+    list.innerHTML = '';
+    if (!items || !items.length) {
+        wrap.style.display = 'none';
+        return;
+    }
+    wrap.style.display = 'block';
+    items.forEach((row) => {
+        const steel = row.steel || '';
+        const lab = document.createElement('label');
+        lab.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 8px;cursor:pointer;border-radius:6px;margin:2px 0;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = steel;
+        cb.className = 'metalCandCb';
+        const span = document.createElement('span');
+        span.textContent = steel + (row.hits ? '  (×' + row.hits + ' in snippets)' : '');
+        lab.appendChild(cb);
+        lab.appendChild(span);
+        list.appendChild(lab);
+    });
+}
+
+function addSelectedMetalCandidates() {
+    document.querySelectorAll('.metalCandCb:checked').forEach((cb) => addBladeMetalRaw(cb.value));
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    initBladeMetalsFromForm();
+    document.querySelectorAll('.steel-catalog-hint').forEach((btn) => {
+        btn.addEventListener('click', function() {
+            addBladeMetalRaw(btn.getAttribute('data-steel') || '');
+        });
+    });
+    const addSel = document.getElementById('addSelectedMetalsBtn');
+    if (addSel) addSel.addEventListener('click', addSelectedMetalCandidates);
+});
+
 // ──────────────────────────────────────────────────────
 // Image handling JS
 // ──────────────────────────────────────────────────────
@@ -393,6 +520,7 @@ async function runAutoSearch() {
     if (!brand || !model) {
         status.textContent = 'Brand and model are required.';
         status.style.color = '#ef4444';
+        renderMetalCandidates([]);
         return;
     }
     btn.disabled = true;
@@ -415,16 +543,27 @@ async function runAutoSearch() {
             status.textContent = 'Bad response from server. Check that the app is running.';
             status.style.color = '#ef4444';
             renderAutoResults([]);
+            renderMetalCandidates([]);
             return;
         }
         if (!resp.ok || !data.ok) {
             status.textContent = 'Search failed: ' + (data.error || resp.statusText || 'Unknown error');
             status.style.color = '#ef4444';
             renderAutoResults([]);
+            renderMetalCandidates([]);
             return;
         }
         renderAutoResults(data.candidates || []);
-        status.textContent = (data.candidates || []).length + ' candidates found. Choose one.';
+        renderMetalCandidates(data.metal_candidates || []);
+        const nc = (data.candidates || []).length;
+        const nm = (data.metal_candidates || []).length;
+        let st = nc + ' image/price candidates';
+        if (nm) {
+            st += '; ' + nm + ' blade steel option(s) (from web + image titles)';
+        } else {
+            st += '. No steel names matched — add from the list below or type manually.';
+        }
+        status.textContent = st;
         status.style.color = '#22c55e';
     } catch (err) {
         if (err && err.name === 'AbortError') {
@@ -434,6 +573,7 @@ async function runAutoSearch() {
         }
         status.style.color = '#ef4444';
         renderAutoResults([]);
+        renderMetalCandidates([]);
     } finally {
         clearTimeout(abortTimer);
         btn.disabled = false;

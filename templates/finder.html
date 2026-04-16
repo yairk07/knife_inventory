@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div
+    class="container finder-page"
+    id="finderRoot"
+    data-match-url="{{ url_for('find_knife_match') }}"
+    data-csrf="{{ csrf_token }}"
+>
+    <header class="finder-header">
+        <p class="finder-kicker">{{ tr('finder_kicker') }}</p>
+        <h1 class="finder-title">{{ tr('finder_title') }}</h1>
+        <p class="finder-lead">{{ tr('finder_lead') }}</p>
+        <div class="finder-progress" id="finderProgress" role="status" aria-live="polite"></div>
+    </header>
+
+    <div class="finder-quiz" id="finderQuiz">
+        {% for q in finder_questions %}
+        <section
+            class="finder-step"
+            data-step="{{ loop.index0 }}"
+            data-qid="{{ q.id }}"
+            {% if not loop.first %}hidden{% endif %}
+        >
+            <h2 class="finder-q-title">{{ tr(q.title_key) }}</h2>
+            <div class="finder-option-grid">
+                {% for opt in q.options %}
+                <button
+                    type="button"
+                    class="finder-option-card"
+                    data-qid="{{ q.id }}"
+                    data-oid="{{ opt.id }}"
+                >
+                    <span class="finder-option-media">
+                        <img src="{{ opt.image }}" alt="" loading="lazy" decoding="async" width="360" height="240">
+                    </span>
+                    <span class="finder-option-label">{{ tr(opt.label_key) }}</span>
+                </button>
+                {% endfor %}
+            </div>
+        </section>
+        {% endfor %}
+        <div class="finder-quiz-footer">
+            <button type="button" class="finder-back" id="finderBack" hidden>{{ tr('finder_back') }}</button>
+        </div>
+    </div>
+
+    <div class="finder-results-wrap" id="finderResults" hidden>
+        <h2 class="finder-results-title">{{ tr('finder_results_title') }}</h2>
+        <p class="finder-results-sub">{{ tr('finder_results_sub') }}</p>
+        <div class="finder-results-grid" id="finderResultsGrid"></div>
+        <div class="finder-results-actions">
+            <a href="{{ url_for('collection') }}" class="finder-link-collection">{{ tr('finder_browse_collection') }}</a>
+            <button type="button" class="finder-restart" id="finderRestart">{{ tr('finder_restart') }}</button>
+        </div>
+    </div>
+
+    <p class="finder-disclaimer">{{ tr('finder_disclaimer') }}</p>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function () {
+    var MSG_LOAD = {{ tr('finder_loading')|tojson }};
+    var MSG_DONE = {{ tr('finder_done')|tojson }};
+    var MSG_EMPTY = {{ tr('finder_no_match')|tojson }};
+    var MSG_ERR = {{ tr('finder_error')|tojson }};
+    var MSG_NOIMG = {{ tr('no_image')|tojson }};
+    var root = document.getElementById("finderRoot");
+    if (!root) return;
+    var matchUrl = root.getAttribute("data-match-url");
+    var csrf = root.getAttribute("data-csrf");
+    var steps = Array.prototype.slice.call(document.querySelectorAll(".finder-step"));
+    var progressEl = document.getElementById("finderProgress");
+    var quizEl = document.getElementById("finderQuiz");
+    var resultsEl = document.getElementById("finderResults");
+    var gridEl = document.getElementById("finderResultsGrid");
+    var backBtn = document.getElementById("finderBack");
+    var restartBtn = document.getElementById("finderRestart");
+    var total = steps.length;
+    var idx = 0;
+    var answers = {};
+
+    function showStep(i) {
+        idx = Math.max(0, Math.min(i, total - 1));
+        steps.forEach(function (el, j) {
+            el.hidden = j !== idx;
+        });
+        progressEl.textContent = (idx + 1) + " / " + total;
+        backBtn.hidden = idx === 0;
+    }
+
+    function bindOptions() {
+        document.querySelectorAll(".finder-option-card").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var qid = btn.getAttribute("data-qid");
+                var oid = btn.getAttribute("data-oid");
+                answers[qid] = oid;
+                if (idx < total - 1) {
+                    showStep(idx + 1);
+                } else {
+                    submitMatch();
+                }
+            });
+        });
+    }
+
+    function escapeHtml(s) {
+        var d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    function renderCards(list) {
+        gridEl.innerHTML = "";
+        if (!list || !list.length) {
+            gridEl.innerHTML = "<p class=\"finder-empty\">" + escapeHtml(MSG_EMPTY) + "</p>";
+            return;
+        }
+        list.forEach(function (k) {
+            var a = document.createElement("a");
+            a.className = "finder-result-card";
+            a.href = k.url;
+            var imgWrap = document.createElement("span");
+            imgWrap.className = "finder-result-media";
+            if (k.image) {
+                var im = document.createElement("img");
+                im.src = k.image;
+                im.alt = "";
+                im.loading = "lazy";
+                imgWrap.appendChild(im);
+            } else {
+                imgWrap.textContent = MSG_NOIMG;
+            }
+            var info = document.createElement("span");
+            info.className = "finder-result-info";
+            info.innerHTML =
+                "<span class=\"finder-result-brand\">" + escapeHtml(k.brand || "") + "</span>" +
+                "<span class=\"finder-result-model\">" + escapeHtml(k.model || "") + "</span>";
+            a.appendChild(imgWrap);
+            a.appendChild(info);
+            gridEl.appendChild(a);
+        });
+    }
+
+    function submitMatch() {
+        quizEl.hidden = true;
+        resultsEl.hidden = false;
+        backBtn.hidden = true;
+        progressEl.textContent = MSG_LOAD;
+        gridEl.innerHTML = "<p class=\"finder-loading\">" + escapeHtml(MSG_LOAD) + "</p>";
+        fetch(matchUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrf
+            },
+            body: JSON.stringify(answers)
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                progressEl.textContent = MSG_DONE;
+                renderCards(data.knives || []);
+            })
+            .catch(function () {
+                progressEl.textContent = "";
+                gridEl.innerHTML = "<p class=\"finder-empty\">" + escapeHtml(MSG_ERR) + "</p>";
+            });
+    }
+
+    backBtn.addEventListener("click", function () {
+        if (idx > 0) {
+            var prev = steps[idx - 1];
+            var pq = prev ? prev.getAttribute("data-qid") : null;
+            if (pq) delete answers[pq];
+            showStep(idx - 1);
+        }
+    });
+
+    restartBtn.addEventListener("click", function () {
+        window.location.reload();
+    });
+
+    bindOptions();
+    showStep(0);
+})();
+</script>
+{% endblock %}

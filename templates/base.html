@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ ui_lang }}" dir="{{ ui_dir }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BLADE & STEEL | Premium Knives</title>
+    <title>{{ tr('site_title') }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -11,18 +11,28 @@
     <header class="header">
         <div class="container nav-content">
             <a href="{{ url_for('index') }}" class="logo">BLADE & STEEL</a>
-            <nav class="nav-links">
-                <a href="{{ url_for('index') }}">Home</a>
-                <a href="{{ url_for('collection') }}">Collection</a>
-                {% if current_user.is_authenticated %}
-                    {% if current_user.is_admin or current_user.email == 'yairk07@gmail.com' %}
-                        <a href="{{ url_for('admin_dashboard') }}" style="color: var(--text-muted);">Admin</a>
+            <div class="nav-right">
+                <div class="lang-switch" role="navigation" aria-label="Language">
+                    <a href="{{ url_for('set_site_language', code='en') }}?next={{ request.full_path|urlencode }}"
+                       class="lang-link{% if ui_lang == 'en' %} lang-link-active{% endif %}">{{ tr('lang_en') }}</a>
+                    <span class="lang-sep">·</span>
+                    <a href="{{ url_for('set_site_language', code='he') }}?next={{ request.full_path|urlencode }}"
+                       class="lang-link{% if ui_lang == 'he' %} lang-link-active{% endif %}">{{ tr('lang_he') }}</a>
+                </div>
+                <nav class="nav-links">
+                    <a href="{{ url_for('index') }}">{{ tr('nav_home') }}</a>
+                    <a href="{{ url_for('collection') }}">{{ tr('nav_collection') }}</a>
+                    <a href="{{ url_for('find_knife') }}">{{ tr('nav_finder') }}</a>
+                    {% if current_user.is_authenticated %}
+                        {% if current_user.is_admin or current_user.email == 'yairk07@gmail.com' %}
+                            <a href="{{ url_for('admin_dashboard') }}" style="color: var(--text-muted);">{{ tr('nav_admin') }}</a>
+                        {% endif %}
+                        <a href="{{ url_for('logout') }}">{{ tr('nav_logout') }}</a>
+                    {% else %}
+                        <a href="{{ url_for('login') }}">{{ tr('nav_login') }}</a>
                     {% endif %}
-                    <a href="{{ url_for('logout') }}">Logout</a>
-                {% else %}
-                    <a href="{{ url_for('login') }}">Login</a>
-                {% endif %}
-            </nav>
+                </nav>
+            </div>
         </div>
     </header>
 
@@ -44,7 +54,7 @@
 
     <footer>
         <div class="container">
-            <p>&copy; 2026 Blade & Steel Premium Gear. All rights reserved.</p>
+            <p>{{ tr('footer_rights') }}</p>
         </div>
     </footer>
 
