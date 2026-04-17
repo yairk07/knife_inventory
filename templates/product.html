@@ -22,7 +22,7 @@
             
             <div class="product-detail-price">
                 {% if knife.sale_price and knife.sale_price > 0 %}
-                    ₪{{ "%.2f"|format(knife.sale_price) }}
+                    ₪{{ fmt_money(knife.sale_price) }}
                 {% else %}
                     <span style="font-size: 1.05rem; color: var(--text-muted);">{{ tr('price_on_request') }}</span>
                 {% endif %}
@@ -52,7 +52,7 @@
                     {% if knife.status == 'sold' %}
                         <strong style="color: #ef4444;">{{ tr('out_of_stock') }}</strong>
                     {% else %}
-                        <strong style="color: #10b981;">{{ tr('in_stock') }} ({{ knife.quantity }})</strong>
+                        <strong style="color: #10b981;">{{ tr('in_stock') }} ({{ fmt_int(knife.quantity) }})</strong>
                     {% endif %}
                 </li>
             </ul>

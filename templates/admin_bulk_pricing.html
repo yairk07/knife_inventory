@@ -71,11 +71,11 @@
                     <td style="font-weight: 500;">{{ knife.brand }}</td>
                     <td>{{ knife.model }}</td>
                     <td style="color: #60a5fa;">
-                        {% if knife.msrp_new_price > 0 %}₪{{ "%.2f"|format(knife.msrp_new_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
+                        {% if knife.msrp_new_price > 0 %}₪{{ fmt_money(knife.msrp_new_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
                     </td>
 
                     <td style="color: var(--primary); font-weight: 600;">
-                        {% if knife.sale_price > 0 %}₪{{ "%.2f"|format(knife.sale_price) }}{% else %}<span style="color:var(--text-muted)">—</span>{% endif %}
+                        {% if knife.sale_price > 0 %}₪{{ fmt_money(knife.sale_price) }}{% else %}<span style="color:var(--text-muted)">—</span>{% endif %}
                     </td>
                 </tr>
                 {% endfor %}

@@ -1,0 +1,457 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="header">
+    <div>
+        <h1>Bulk Change</h1>
+        <div style="color: var(--text-muted); font-size: 0.9rem; margin-top: 6px;">
+            Pick knives missing a photo and/or blade material. Use auto-search attributes, apply, and it auto-advances.
+        </div>
+    </div>
+    <a href="{{ url_for('admin_bulk_pricing') }}" class="btn btn-outline">Bulk Pricing (legacy)</a>
+</div>
+
+<div class="card" id="bulkChangeSetup">
+    <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px; align-items: end;">
+        <div>
+            <label style="display:block; font-weight:600; margin-bottom:8px;">Auto search attributes (global)</label>
+            <input id="bcAttributes" type="text" placeholder="tanto, black G10, M390 / MagnaCut, carbon fiber..." style="width:100%; padding:12px; border: 1px solid var(--border); border-radius: 8px; background: #0b1017; color: var(--text-main);">
+            <div style="margin-top: 8px; color: var(--text-muted); font-size: 0.82rem;">
+                Used for image/steel hints when searching (you can tweak per knife during the wizard).
+            </div>
+        </div>
+        <div style="display:flex; gap:14px; flex-wrap:wrap;">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted);">
+                <input type="checkbox" id="bcNeedPhoto" checked style="accent-color: var(--primary);">
+                Missing photo
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted);">
+                <input type="checkbox" id="bcNeedSteel" checked style="accent-color: var(--primary);">
+                Missing blade material
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted);">
+                <input type="checkbox" id="bcAutoSearch" checked style="accent-color: var(--primary);">
+                Auto search on each knife
+            </label>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="padding: 0; overflow-x:auto;" id="bulkChangeTableWrap">
+    <div style="padding: 15px 20px; border-bottom: 1px solid var(--border); display:flex; justify-content: space-between; align-items: center;">
+        <div style="display:flex; flex-direction: column; gap:4px;">
+            <div style="font-weight: 700; color: var(--text-main);">Select knives</div>
+            <div id="bcSelectedCount" style="font-size: 0.85rem; color: var(--text-muted);">0 selected</div>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size: 0.9rem; color: var(--text-muted);">
+                <input type="checkbox" id="bcSelectAll" style="accent-color: var(--primary);"> Select all shown
+            </label>
+            <button type="button" class="btn" id="bcStartBtn" disabled>Start wizard</button>
+        </div>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 60px;"></th>
+                <th>Brand</th>
+                <th>Model</th>
+                <th style="width: 160px;">Missing</th>
+                <th style="width: 210px;">Blade material not required</th>
+            </tr>
+        </thead>
+        <tbody id="bcRows">
+            {% for k in knives %}
+            <tr
+                data-id="{{ k.id }}"
+                data-missing-image="{{ 1 if k.missing_image else 0 }}"
+                data-missing-metals="{{ 1 if k.missing_blade_metals else 0 }}"
+            >
+                <td style="text-align:center;">
+                    <input type="checkbox" class="bcPick" value="{{ k.id }}" style="accent-color: var(--primary);">
+                </td>
+                <td style="font-weight: 600;">{{ k.brand }}</td>
+                <td>{{ k.model }}</td>
+                <td style="color: var(--text-muted);">
+                    {% if k.missing_image %}<span style="color:#f59e0b;">photo</span>{% endif %}
+                    {% if k.missing_image and k.missing_blade_metals %}<span style="color:var(--border);"> · </span>{% endif %}
+                    {% if k.missing_blade_metals %}<span style="color:#f59e0b;">material</span>{% endif %}
+                    {% if not k.missing_image and not k.missing_blade_metals %}—{% endif %}
+                </td>
+                <td>
+                    <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color: var(--text-muted);">
+                        <input type="checkbox" class="bcNoSteel" style="accent-color: var(--primary);">
+                        Skip steel for this knife
+                    </label>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card" id="bulkChangeWizard" style="display:none; max-width: 1100px;">
+    <div style="display:flex; justify-content: space-between; gap: 14px; align-items: flex-start; flex-wrap: wrap;">
+        <div>
+            <div id="bcProgress" style="color: var(--text-muted); font-size: 0.9rem;"></div>
+            <div id="bcTitle" style="font-size: 1.4rem; font-weight: 800; margin-top: 6px;"></div>
+            <div id="bcSub" style="color: var(--text-muted); font-size: 0.9rem; margin-top: 6px;"></div>
+        </div>
+        <div style="display:flex; gap:10px; flex-wrap: wrap;">
+            <button type="button" class="btn btn-outline" id="bcExitBtn">Exit</button>
+            <button type="button" class="btn btn-outline" id="bcSkipBtn">Skip</button>
+            <button type="button" class="btn" id="bcApplyNextBtn" disabled>Apply & next</button>
+        </div>
+    </div>
+
+    <div style="margin-top: 18px; display:grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start;">
+        <div style="background: #0b1017; border: 1px solid var(--border); border-radius: 12px; padding: 16px;">
+            <div style="display:flex; gap:12px; align-items:center; justify-content: space-between; flex-wrap: wrap;">
+                <div style="font-weight: 700;">Auto search</div>
+                <button type="button" class="btn" id="bcSearchBtn">Search</button>
+            </div>
+            <div style="margin-top: 10px;">
+                <input id="bcKnifeAttributes" type="text" placeholder="attributes for this knife" style="width:100%; padding:12px; border: 1px solid var(--border); border-radius: 8px; background: #06090e; color: var(--text-main);">
+            </div>
+            <div id="bcStatus" style="margin-top: 10px; color: var(--text-muted); font-size: 0.85rem;"></div>
+
+            <div id="bcCandidates" style="display:none; margin-top: 14px; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));"></div>
+
+            <div id="bcMetalsBox" style="display:none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);">
+                <div style="font-weight: 700; margin-bottom: 8px;">Blade material suggestions</div>
+                <div id="bcMetals" style="max-height: 220px; overflow:auto;"></div>
+            </div>
+        </div>
+
+        <div style="background: #0b1017; border: 1px solid var(--border); border-radius: 12px; padding: 16px;">
+            <div style="display:flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <div style="font-weight: 700;">What to apply</div>
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted);">
+                    <input type="checkbox" id="bcKnifeNoSteel" style="accent-color: var(--primary);">
+                    This knife doesn’t need blade material
+                </label>
+            </div>
+            <div style="margin-top: 12px; display:flex; gap: 16px; flex-wrap: wrap;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted);">
+                    <input type="checkbox" id="bcApplyImage" checked style="accent-color: var(--primary);">
+                    Apply photo
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted);">
+                    <input type="checkbox" id="bcApplyMetals" checked style="accent-color: var(--primary);">
+                    Apply blade material
+                </label>
+            </div>
+
+            <div style="margin-top: 14px; color: var(--text-muted); font-size: 0.85rem;">
+                Pick a candidate (image). Then tick blade materials (optional). Apply will save to DB and jump to next knife.
+            </div>
+
+            <div style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px;">
+                <div style="font-weight: 700; margin-bottom: 10px;">Selected candidate</div>
+                <div id="bcPicked" style="color: var(--text-muted); font-size: 0.9rem;">None</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    var KNIVES = {{ knives|tojson }};
+    var setup = document.getElementById('bulkChangeSetup');
+    var tableWrap = document.getElementById('bulkChangeTableWrap');
+    var wizard = document.getElementById('bulkChangeWizard');
+    var startBtn = document.getElementById('bcStartBtn');
+    var selectAll = document.getElementById('bcSelectAll');
+    var selectedCount = document.getElementById('bcSelectedCount');
+    var needPhoto = document.getElementById('bcNeedPhoto');
+    var needSteel = document.getElementById('bcNeedSteel');
+    var autoSearch = document.getElementById('bcAutoSearch');
+    var globalAttr = document.getElementById('bcAttributes');
+    var rowsEl = document.getElementById('bcRows');
+
+    var q = [];
+    var idx = 0;
+    var picked = null;
+    var selectedMetals = [];
+    var perKnifeNoSteel = {};
+    var perKnifeAttr = {};
+
+    function byId(id) {
+        for (var i = 0; i < KNIVES.length; i++) if (String(KNIVES[i].id) === String(id)) return KNIVES[i];
+        return null;
+    }
+
+    function shownRows() {
+        return Array.prototype.slice.call(rowsEl.querySelectorAll('tr'));
+    }
+
+    function rowMatches(tr) {
+        var mi = tr.getAttribute('data-missing-image') === '1';
+        var mm = tr.getAttribute('data-missing-metals') === '1';
+        var wantI = !!needPhoto.checked;
+        var wantM = !!needSteel.checked;
+        if (wantI && wantM) return mi || mm;
+        if (wantI) return mi;
+        if (wantM) return mm;
+        return true;
+    }
+
+    function refreshVisibility() {
+        shownRows().forEach(function (tr) {
+            tr.style.display = rowMatches(tr) ? '' : 'none';
+        });
+        refreshSelectedCount();
+    }
+
+    function refreshSelectedCount() {
+        var picks = document.querySelectorAll('.bcPick:checked');
+        selectedCount.textContent = String(picks.length) + ' selected';
+        startBtn.disabled = picks.length === 0;
+    }
+
+    function buildQueue() {
+        q = [];
+        shownRows().forEach(function (tr) {
+            if (tr.style.display === 'none') return;
+            var cb = tr.querySelector('.bcPick');
+            if (cb && cb.checked) q.push(Number(cb.value));
+        });
+        idx = 0;
+    }
+
+    function setStatus(text, color) {
+        var el = document.getElementById('bcStatus');
+        el.textContent = text || '';
+        el.style.color = color || 'var(--text-muted)';
+    }
+
+    function resetPick() {
+        picked = null;
+        selectedMetals = [];
+        document.getElementById('bcPicked').textContent = 'None';
+        document.getElementById('bcApplyNextBtn').disabled = true;
+    }
+
+    function renderCandidates(list) {
+        var box = document.getElementById('bcCandidates');
+        box.innerHTML = '';
+        if (!list || !list.length) {
+            box.style.display = 'none';
+            return;
+        }
+        box.style.display = 'grid';
+        list.forEach(function (c, i) {
+            var card = document.createElement('button');
+            card.type = 'button';
+            card.style.cssText = 'text-align:left;background:#111620;border:1px solid var(--border);border-radius:10px;padding:10px;cursor:pointer;';
+            card.innerHTML =
+                '<img src=\"' + String(c.image_url || '') + '\" alt=\"\" style=\"width:100%;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border);\">' +
+                '<div style=\"font-size:0.78rem;margin-top:8px;color:var(--text-main);min-height:36px;\">' + String((c.title || 'Candidate').slice(0, 82)) + '</div>' +
+                '<div style=\"font-size:0.75rem;color:#60a5fa;margin-top:4px;\">' + String(c.source_url || '') + '</div>';
+            card.addEventListener('click', function () {
+                picked = c;
+                document.getElementById('bcPicked').textContent = (c.title || 'Candidate').slice(0, 120);
+                document.getElementById('bcApplyNextBtn').disabled = false;
+            });
+            box.appendChild(card);
+        });
+    }
+
+    function renderMetals(items) {
+        var wrap = document.getElementById('bcMetalsBox');
+        var list = document.getElementById('bcMetals');
+        list.innerHTML = '';
+        if (!items || !items.length) {
+            wrap.style.display = 'none';
+            return;
+        }
+        wrap.style.display = 'block';
+        items.forEach(function (row) {
+            var lab = document.createElement('label');
+            lab.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 8px;cursor:pointer;border-radius:8px;margin:2px 0;';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = row.steel || '';
+            cb.style.accentColor = 'var(--primary)';
+            cb.addEventListener('change', function () {
+                if (cb.checked) {
+                    if (selectedMetals.indexOf(cb.value) === -1) selectedMetals.push(cb.value);
+                } else {
+                    selectedMetals = selectedMetals.filter(function (x) { return x !== cb.value; });
+                }
+            });
+            var span = document.createElement('span');
+            span.textContent = String(row.steel || '') + (row.hits ? ' (×' + row.hits + ')' : '');
+            lab.appendChild(cb);
+            lab.appendChild(span);
+            list.appendChild(lab);
+        });
+    }
+
+    async function runSearchFor(knife) {
+        var attrs = (document.getElementById('bcKnifeAttributes').value || '').trim();
+        perKnifeAttr[String(knife.id)] = attrs;
+        resetPick();
+        setStatus('Searching...', '#d4af37');
+        try {
+            var resp = await apiFetch('/admin/api/auto-search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ brand: knife.brand, model: knife.model, attributes: attrs })
+            });
+            var data = await resp.json();
+            if (!resp.ok || !data.ok) {
+                setStatus('Search failed: ' + (data.error || resp.statusText || 'Unknown error'), '#ef4444');
+                renderCandidates([]);
+                renderMetals([]);
+                return;
+            }
+            renderCandidates(data.candidates || []);
+            renderMetals(data.metal_candidates || []);
+            var nc = (data.candidates || []).length;
+            var nm = (data.metal_candidates || []).length;
+            setStatus(nc + ' candidates' + (nm ? '; ' + nm + ' steel hint(s)' : ''), '#22c55e');
+        } catch (e) {
+            setStatus('Network error while searching', '#ef4444');
+            renderCandidates([]);
+            renderMetals([]);
+        }
+    }
+
+    function showWizardForQueueIndex(i) {
+        idx = i;
+        if (idx >= q.length) {
+            wizard.style.display = 'none';
+            setup.style.display = '';
+            tableWrap.style.display = '';
+            flash('Done. Reached end of selection.');
+            return;
+        }
+        var knife = byId(q[idx]);
+        if (!knife) {
+            showWizardForQueueIndex(idx + 1);
+            return;
+        }
+
+        var title = document.getElementById('bcTitle');
+        var sub = document.getElementById('bcSub');
+        var prog = document.getElementById('bcProgress');
+        prog.textContent = 'Knife ' + String(idx + 1) + ' of ' + String(q.length) + ' (ID ' + String(knife.id) + ')';
+        title.textContent = String(knife.brand || '') + ' — ' + String(knife.model || '');
+        sub.textContent = (knife.missing_image ? 'Missing photo. ' : '') + (knife.missing_blade_metals ? 'Missing blade material.' : '');
+
+        var noSteel = !!perKnifeNoSteel[String(knife.id)];
+        var noSteelCb = document.getElementById('bcKnifeNoSteel');
+        noSteelCb.checked = noSteel;
+
+        document.getElementById('bcApplyImage').checked = !!needPhoto.checked;
+        document.getElementById('bcApplyMetals').checked = !!needSteel.checked;
+        document.getElementById('bcKnifeAttributes').value = perKnifeAttr[String(knife.id)] || (globalAttr.value || '');
+        resetPick();
+        setStatus('Pick a candidate, then apply.', 'var(--text-muted)');
+        renderCandidates([]);
+        renderMetals([]);
+
+        if (autoSearch.checked) runSearchFor(knife);
+    }
+
+    async function applyCurrentAndNext() {
+        var knife = byId(q[idx]);
+        if (!knife) return;
+        if (!picked) return;
+        var applyImage = document.getElementById('bcApplyImage').checked;
+        var applyMetals = document.getElementById('bcApplyMetals').checked;
+        var noSteel = document.getElementById('bcKnifeNoSteel').checked;
+        perKnifeNoSteel[String(knife.id)] = noSteel;
+        if (noSteel) applyMetals = false;
+
+        setStatus('Applying...', '#d4af37');
+        try {
+            var resp = await apiFetch('/admin/api/bulk-change/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    knife_id: knife.id,
+                    apply_image: applyImage,
+                    apply_metals: applyMetals,
+                    image_url: picked.image_url || '',
+                    page_url: picked.page_url || picked.source_url || '',
+                    blade_metals: selectedMetals || []
+                })
+            });
+            var data = await resp.json();
+            if (!resp.ok || !data.ok) {
+                setStatus('Apply failed: ' + (data.error || resp.statusText || 'Unknown error'), '#ef4444');
+                return;
+            }
+            setStatus('Saved. Moving to next...', '#22c55e');
+            setTimeout(function () { showWizardForQueueIndex(idx + 1); }, 250);
+        } catch (e) {
+            setStatus('Network error while applying', '#ef4444');
+        }
+    }
+
+    function flash(msg) {
+        try { alert(msg); } catch (e) {}
+    }
+
+    rowsEl.querySelectorAll('.bcPick').forEach(function (cb) {
+        cb.addEventListener('change', refreshSelectedCount);
+    });
+    rowsEl.querySelectorAll('.bcNoSteel').forEach(function (cb) {
+        cb.addEventListener('change', function () {
+            var tr = cb.closest('tr');
+            if (!tr) return;
+            var id = tr.getAttribute('data-id');
+            perKnifeNoSteel[String(id)] = cb.checked;
+        });
+    });
+
+    selectAll.addEventListener('change', function () {
+        shownRows().forEach(function (tr) {
+            if (tr.style.display === 'none') return;
+            var cb = tr.querySelector('.bcPick');
+            if (cb) cb.checked = selectAll.checked;
+        });
+        refreshSelectedCount();
+    });
+
+    needPhoto.addEventListener('change', refreshVisibility);
+    needSteel.addEventListener('change', refreshVisibility);
+
+    startBtn.addEventListener('click', function () {
+        buildQueue();
+        if (!q.length) return;
+        setup.style.display = 'none';
+        tableWrap.style.display = 'none';
+        wizard.style.display = '';
+        showWizardForQueueIndex(0);
+    });
+
+    document.getElementById('bcSearchBtn').addEventListener('click', function () {
+        var knife = byId(q[idx]);
+        if (knife) runSearchFor(knife);
+    });
+
+    document.getElementById('bcApplyNextBtn').addEventListener('click', applyCurrentAndNext);
+
+    document.getElementById('bcSkipBtn').addEventListener('click', function () {
+        showWizardForQueueIndex(idx + 1);
+    });
+
+    document.getElementById('bcExitBtn').addEventListener('click', function () {
+        wizard.style.display = 'none';
+        setup.style.display = '';
+        tableWrap.style.display = '';
+    });
+
+    document.getElementById('bcKnifeNoSteel').addEventListener('change', function () {
+        var knife = byId(q[idx]);
+        if (knife) perKnifeNoSteel[String(knife.id)] = this.checked;
+    });
+
+    refreshVisibility();
+})();
+</script>
+{% endblock %}
+

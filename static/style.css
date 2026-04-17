@@ -162,6 +162,62 @@ a:hover {
     color: #000;
 }
 
+.auth-btn {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 0.92rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    user-select: none;
+    border: 1px solid transparent;
+    transition: transform 0.15s ease, border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.auth-btn:active {
+    transform: translateY(1px);
+}
+
+.auth-btn:focus-visible {
+    outline: 2px solid rgba(212, 175, 55, 0.55);
+    outline-offset: 2px;
+}
+
+.auth-btn-primary {
+    background: linear-gradient(180deg, rgba(212, 175, 55, 0.22) 0%, rgba(212, 175, 55, 0.12) 100%);
+    border-color: rgba(212, 175, 55, 0.35);
+    color: var(--text-primary);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.42);
+}
+
+.auth-btn-primary:hover {
+    border-color: rgba(212, 175, 55, 0.6);
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.55);
+}
+
+.auth-btn-google {
+    background: #ffffff;
+    color: #141414;
+    border-color: rgba(0, 0, 0, 0.12);
+}
+
+.auth-btn-google:hover {
+    background: #f6f6f6;
+    border-color: rgba(0, 0, 0, 0.18);
+}
+
+.auth-btn .auth-icon {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+}
+
 /* Product Grid */
 .section-title {
     margin: 60px 0 30px;

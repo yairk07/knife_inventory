@@ -30,7 +30,7 @@
                 <div class="product-model">{{ knife.model }}</div>
                 <div class="product-price">
                     {% if knife.sale_price and knife.sale_price > 0 %}
-                        ₪{{ "%.2f"|format(knife.sale_price) }}
+                        ₪{{ fmt_money(knife.sale_price) }}
                     {% else %}
                         <span style="font-size: 0.85rem; color: var(--text-muted);">{{ tr('price_on_request') }}</span>
                     {% endif %}

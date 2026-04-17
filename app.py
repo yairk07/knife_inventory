@@ -7,6 +7,7 @@ import re
 import json
 import concurrent.futures
 import time
+import threading
 import urllib.request
 import ssl
 from datetime import datetime, timezone
@@ -206,6 +207,23 @@ class KnifeInputService:
 
 
 knife_input_service = KnifeInputService()
+
+
+class NumberFormatService:
+    def format_int(self, value):
+        try:
+            return f"{int(value):,}"
+        except (TypeError, ValueError):
+            return "0"
+
+    def format_money(self, value):
+        try:
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "0.00"
+
+
+number_format_service = NumberFormatService()
 
 
 class KnifeAutoLookupService:
@@ -619,6 +637,177 @@ class KnifeAutoLookupService:
 
 knife_auto_lookup_service = KnifeAutoLookupService()
 
+
+class ShipmentTrackingService:
+    def __init__(self):
+        self._endpoint = "https://apimftprd.israelpost.co.il/MyPost-itemtrace/items/{item_code}/heb"
+        self._subscription_key = os.getenv("ISRAEL_POST_SUBSCRIPTION_KEY", "5ccb5b137e7444d885be752eda7f767a").strip()
+
+    def normalize_item_code(self, value):
+        code = re.sub(r"[^A-Za-z0-9]", "", (value or "").strip().upper())
+        return code
+
+    def fetch_tracking_data(self, item_code):
+        clean_code = self.normalize_item_code(item_code)
+        if not clean_code:
+            raise ValueError("Item code is required.")
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7,ar;q=0.6",
+            "authorization": "Bearer null",
+            "cache-control": "no-cache",
+            "ocp-apim-subscription-key": self._subscription_key,
+            "origin": "https://doar.israelpost.co.il",
+            "pragma": "no-cache",
+            "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
+        }
+        response = requests.get(
+            self._endpoint.format(item_code=clean_code),
+            headers=headers,
+            timeout=12,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected tracking response format.")
+        return payload
+
+    def parse_summary(self, payload):
+        maslul = payload.get("Maslul") or []
+        latest_event = maslul[-1] if isinstance(maslul, list) and maslul else {}
+        status_for_display = (payload.get("StatusForDisplay") or "").strip()
+        if not status_for_display and isinstance(latest_event, dict):
+            status_for_display = (latest_event.get("Status") or latest_event.get("StatusDesc") or "").strip()
+        return {
+            "item_code": (payload.get("ItemCode") or "").strip(),
+            "category_name": (payload.get("CategoryName") or "").strip(),
+            "category_icon": (payload.get("CategoryIcon") or "").strip(),
+            "status_for_display": status_for_display,
+            "sender_name": (payload.get("SenderName") or "").strip(),
+            "delivery_type_desc": (payload.get("DeliveryTypeDesc") or "").strip(),
+            "delivery_type_icon": (payload.get("DeliveryTypeIcon") or "").strip(),
+            "last_event_desc": (latest_event.get("StatusDesc") or latest_event.get("Status") or "").strip() if isinstance(latest_event, dict) else "",
+            "last_event_branch": (latest_event.get("BranchName") or "").strip() if isinstance(latest_event, dict) else "",
+            "last_event_city": (latest_event.get("City") or "").strip() if isinstance(latest_event, dict) else "",
+            "last_event_icon": (latest_event.get("CategoryIcon") or "").strip() if isinstance(latest_event, dict) else "",
+        }
+
+    def parse_timeline(self, payload):
+        events = []
+        maslul = payload.get("Maslul") or []
+        if not isinstance(maslul, list):
+            return events
+        for event in maslul:
+            if not isinstance(event, dict):
+                continue
+            events.append(
+                {
+                    "date": (event.get("StatusDate") or event.get("EventDate") or event.get("Date") or "").strip(),
+                    "category": (event.get("CategoryName") or "").strip(),
+                    "icon": (event.get("CategoryIcon") or "").strip(),
+                    "status": (event.get("StatusDesc") or event.get("Status") or "").strip(),
+                    "branch": (event.get("BranchName") or "").strip(),
+                    "city": (event.get("City") or "").strip(),
+                }
+            )
+        return events
+
+
+shipment_tracking_service = ShipmentTrackingService()
+
+
+class BladeMetalSuggestionService:
+    _STEELS = tuple(
+        sorted(
+            {
+                "m390",
+                "s90v",
+                "s30v",
+                "s35vn",
+                "vg10",
+                "154cm",
+                "14c28n",
+                "n690",
+                "lc200n",
+                "magnacut",
+                "bd1n",
+                "20cv",
+                "elmax",
+                "1095",
+                "52100",
+                "m4",
+                "cpm-3v",
+                "3v",
+                "4v",
+                "d2",
+                "a2",
+                "o1",
+            }
+        )
+    )
+
+    @staticmethod
+    def suggest(texts, limit=12):
+        blob = " ".join((t or "") for t in (texts or [])).lower()
+        hits = []
+        for steel in BladeMetalSuggestionService._STEELS:
+            pat = r"\b" + re.escape(steel) + r"\b"
+            c = len(re.findall(pat, blob, flags=re.IGNORECASE))
+            if c:
+                hits.append((c, steel))
+        hits.sort(key=lambda x: (-x[0], x[1]))
+        out = [{"steel": s.upper() if s in ("m4", "d2", "a2", "o1") else (s[0].upper() + s[1:]), "hits": c} for c, s in hits[:limit]]
+        return out
+
+
+class AdminImageImportService:
+    @staticmethod
+    def download_to_uploads(image_url):
+        image_url = knife_input_service.clean_url(image_url)
+        if not image_url.startswith(("http://", "https://")):
+            raise ValueError("Invalid URL")
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        req = urllib.request.Request(
+            image_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            img_bytes = resp.read()
+
+        if len(img_bytes) < 500:
+            raise ValueError("Downloaded file too small, likely not an image")
+
+        ext = "jpg"
+        if "png" in content_type:
+            ext = "png"
+        elif "webp" in content_type:
+            ext = "webp"
+        elif "gif" in content_type:
+            ext = "gif"
+        elif ".png" in image_url.lower():
+            ext = "png"
+        elif ".webp" in image_url.lower():
+            ext = "webp"
+        elif ".gif" in image_url.lower():
+            ext = "gif"
+
+        filename = generate_unique_filename(ext)
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        with open(filepath, "wb") as f:
+            f.write(img_bytes)
+
+        return {
+            "filename": filename,
+            "url": url_for("static", filename=f"uploads/{filename}"),
+            "source_url": image_url,
+        }
+
+
 def init_db():
     for attempt in range(30):
         try:
@@ -665,6 +854,23 @@ def init_db():
                     )
                 """)
                 conn.execute("""
+                    CREATE TABLE IF NOT EXISTS shipment_tracking (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        item_code TEXT NOT NULL UNIQUE,
+                        nickname TEXT DEFAULT '',
+                        category_name TEXT DEFAULT '',
+                        status_for_display TEXT DEFAULT '',
+                        sender_name TEXT DEFAULT '',
+                        delivery_type_desc TEXT DEFAULT '',
+                        last_event_desc TEXT DEFAULT '',
+                        last_event_branch TEXT DEFAULT '',
+                        last_event_city TEXT DEFAULT '',
+                        raw_payload TEXT DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS audit_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_email TEXT NOT NULL,
@@ -682,6 +888,10 @@ def init_db():
                     pass
                 try:
                     conn.execute("ALTER TABLE knives ADD COLUMN blade_metals TEXT DEFAULT '[]'")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE shipment_tracking ADD COLUMN nickname TEXT DEFAULT ''")
                 except sqlite3.OperationalError:
                     pass
                 conn.commit()
@@ -731,6 +941,8 @@ def inject_storefront_i18n():
         "ui_lang": lang,
         "ui_dir": "rtl" if lang == "he" else "ltr",
         "tr": tr,
+        "fmt_int": number_format_service.format_int,
+        "fmt_money": number_format_service.format_money,
     }
 
 
@@ -1139,8 +1351,40 @@ def admin_dashboard():
             SUM(CASE WHEN sale_price > 0 THEN 1 ELSE 0 END) as has_sale
         FROM knives
     """).fetchone()
+    shipment_rows_db = conn.execute(
+        """
+        SELECT id, item_code, nickname, category_name, status_for_display, sender_name, delivery_type_desc,
+               last_event_desc, last_event_branch, last_event_city, raw_payload, updated_at
+        FROM shipment_tracking
+        ORDER BY updated_at DESC, id DESC
+        """
+    ).fetchall()
 
     conn.close()
+    shipment_rows = []
+    for row in shipment_rows_db:
+        row_dict = dict(row)
+        payload = {}
+        raw_payload = (row_dict.get("raw_payload") or "").strip()
+        if raw_payload:
+            try:
+                payload = json.loads(raw_payload)
+            except (TypeError, ValueError):
+                payload = {}
+        live_summary = shipment_tracking_service.parse_summary(payload) if payload else {}
+        if live_summary:
+            row_dict["category_name"] = live_summary.get("category_name") or row_dict.get("category_name") or ""
+            row_dict["status_for_display"] = live_summary.get("status_for_display") or row_dict.get("status_for_display") or ""
+            row_dict["sender_name"] = live_summary.get("sender_name") or row_dict.get("sender_name") or ""
+            row_dict["delivery_type_desc"] = live_summary.get("delivery_type_desc") or row_dict.get("delivery_type_desc") or ""
+            row_dict["last_event_desc"] = live_summary.get("last_event_desc") or row_dict.get("last_event_desc") or ""
+            row_dict["last_event_branch"] = live_summary.get("last_event_branch") or row_dict.get("last_event_branch") or ""
+            row_dict["last_event_city"] = live_summary.get("last_event_city") or row_dict.get("last_event_city") or ""
+        row_dict["category_icon"] = live_summary.get("category_icon", "") if live_summary else ""
+        row_dict["delivery_type_icon"] = live_summary.get("delivery_type_icon", "") if live_summary else ""
+        row_dict["last_event_icon"] = live_summary.get("last_event_icon", "") if live_summary else ""
+        row_dict["timeline_events"] = shipment_tracking_service.parse_timeline(payload)
+        shipment_rows.append(row_dict)
 
     landing_page_enabled = get_setting('landing_page_enabled', '1') == '1'
 
@@ -1150,6 +1394,7 @@ def admin_dashboard():
         counts=counts,
         status_counts=status_counts,
         pricing_stats=pricing_stats,
+        shipment_rows=shipment_rows,
         landing_page_enabled=landing_page_enabled
     )
 
@@ -1309,6 +1554,147 @@ def admin_toggle_landing():
     return jsonify({"ok": True, "enabled": new_val == '1'})
 
 
+@app.route("/admin/shipments/track", methods=["POST"])
+@admin_required
+def admin_track_shipment():
+    item_code = shipment_tracking_service.normalize_item_code(request.form.get("item_code", ""))
+    if not item_code:
+        flash("Please enter a valid shipment item code.", "error")
+        return redirect(url_for("admin_dashboard"))
+    try:
+        payload = shipment_tracking_service.fetch_tracking_data(item_code)
+        summary = shipment_tracking_service.parse_summary(payload)
+    except requests.RequestException:
+        flash("Could not fetch shipment from Israel Post API right now.", "error")
+        return redirect(url_for("admin_dashboard"))
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin_dashboard"))
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    conn = get_db_connection()
+    conn.execute(
+        """
+        INSERT INTO shipment_tracking (
+            item_code, category_name, status_for_display, sender_name, delivery_type_desc,
+            last_event_desc, last_event_branch, last_event_city, raw_payload, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_code) DO UPDATE SET
+            category_name=excluded.category_name,
+            status_for_display=excluded.status_for_display,
+            sender_name=excluded.sender_name,
+            delivery_type_desc=excluded.delivery_type_desc,
+            last_event_desc=excluded.last_event_desc,
+            last_event_branch=excluded.last_event_branch,
+            last_event_city=excluded.last_event_city,
+            raw_payload=excluded.raw_payload,
+            updated_at=excluded.updated_at
+        """,
+        (
+            summary["item_code"] or item_code,
+            summary["category_name"],
+            summary["status_for_display"],
+            summary["sender_name"],
+            summary["delivery_type_desc"],
+            summary["last_event_desc"],
+            summary["last_event_branch"],
+            summary["last_event_city"],
+            json.dumps(payload, ensure_ascii=False),
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    write_audit_log("shipment_track", "shipment", None, f"item_code={item_code}")
+    flash(f"Shipment {item_code} tracked successfully.", "success")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/shipments/<int:shipment_id>/refresh", methods=["POST"])
+@admin_required
+def admin_refresh_shipment(shipment_id):
+    conn = get_db_connection()
+    row = conn.execute("SELECT id, item_code FROM shipment_tracking WHERE id = ?", (shipment_id,)).fetchone()
+    conn.close()
+    if not row:
+        flash("Shipment not found.", "error")
+        return redirect(url_for("admin_dashboard"))
+
+    try:
+        payload = shipment_tracking_service.fetch_tracking_data(row["item_code"])
+        summary = shipment_tracking_service.parse_summary(payload)
+    except requests.RequestException:
+        flash("Could not refresh shipment from Israel Post API right now.", "error")
+        return redirect(url_for("admin_dashboard"))
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin_dashboard"))
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    conn = get_db_connection()
+    conn.execute(
+        """
+        UPDATE shipment_tracking
+        SET category_name = ?, status_for_display = ?, sender_name = ?, delivery_type_desc = ?,
+            last_event_desc = ?, last_event_branch = ?, last_event_city = ?, raw_payload = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            summary["category_name"],
+            summary["status_for_display"],
+            summary["sender_name"],
+            summary["delivery_type_desc"],
+            summary["last_event_desc"],
+            summary["last_event_branch"],
+            summary["last_event_city"],
+            json.dumps(payload, ensure_ascii=False),
+            now,
+            shipment_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    write_audit_log("shipment_refresh", "shipment", shipment_id, f"item_code={row['item_code']}")
+    flash(f"Shipment {row['item_code']} refreshed.", "success")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/shipments/<int:shipment_id>/delete", methods=["POST"])
+@admin_required
+def admin_delete_shipment(shipment_id):
+    conn = get_db_connection()
+    row = conn.execute("SELECT item_code FROM shipment_tracking WHERE id = ?", (shipment_id,)).fetchone()
+    if row:
+        conn.execute("DELETE FROM shipment_tracking WHERE id = ?", (shipment_id,))
+        conn.commit()
+    conn.close()
+    if row:
+        write_audit_log("shipment_delete", "shipment", shipment_id, f"item_code={row['item_code']}")
+        flash(f"Shipment {row['item_code']} removed.", "success")
+    else:
+        flash("Shipment not found.", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/shipments/<int:shipment_id>/set-nickname", methods=["POST"])
+@admin_required
+def admin_set_shipment_nickname(shipment_id):
+    nickname = knife_input_service.clean_text(request.form.get("nickname", ""))[:80]
+    conn = get_db_connection()
+    row = conn.execute("SELECT item_code FROM shipment_tracking WHERE id = ?", (shipment_id,)).fetchone()
+    if not row:
+        conn.close()
+        flash("Shipment not found.", "error")
+        return redirect(url_for("admin_dashboard"))
+    conn.execute("UPDATE shipment_tracking SET nickname = ? WHERE id = ?", (nickname, shipment_id))
+    conn.commit()
+    conn.close()
+    write_audit_log("shipment_nickname_update", "shipment", shipment_id, f"item_code={row['item_code']};nickname={nickname}")
+    flash("Shipment nickname saved.", "success")
+    return redirect(url_for("admin_dashboard"))
+
+
 @app.route("/admin/knives/toggle-featured", methods=["POST"])
 @admin_required
 def admin_toggle_featured():
@@ -1383,46 +1769,17 @@ def api_upload_url():
     if not data or 'url' not in data:
         return jsonify({"error": "No URL provided"}), 400
 
-    image_url = knife_input_service.clean_url(data.get("url"))
-    if not image_url.startswith(('http://', 'https://')):
-        return jsonify({"error": "Invalid URL"}), 400
-
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-        req = urllib.request.Request(image_url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-            content_type = resp.headers.get('Content-Type', '')
-            img_bytes = resp.read()
-
-        if len(img_bytes) < 500:
-            return jsonify({"error": "Downloaded file too small, likely not an image"}), 400
-
-        # Determine extension
-        ext = 'jpg'
-        if 'png' in content_type: ext = 'png'
-        elif 'webp' in content_type: ext = 'webp'
-        elif 'gif' in content_type: ext = 'gif'
-        elif '.png' in image_url.lower(): ext = 'png'
-        elif '.webp' in image_url.lower(): ext = 'webp'
-        elif '.gif' in image_url.lower(): ext = 'gif'
-
-        filename = generate_unique_filename(ext)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        with open(filepath, 'wb') as f:
-            f.write(img_bytes)
-
-        write_audit_log("image_upload_url", "media", None, f"filename={filename}")
+        out = AdminImageImportService.download_to_uploads(data.get("url"))
+        write_audit_log("image_upload_url", "media", None, f"filename={out['filename']}")
         return jsonify({
             "success": True,
-            "filename": filename,
-            "url": url_for('static', filename=f'uploads/{filename}'),
-            "source_url": image_url
+            "filename": out["filename"],
+            "url": out["url"],
+            "source_url": out["source_url"],
         })
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1444,9 +1801,117 @@ def api_auto_search():
             except concurrent.futures.TimeoutError:
                 return jsonify({"ok": False, "error": "Search timed out. Try again or use shorter keywords."}), 504
         write_audit_log("auto_search", "knife", None, f"query={brand} {model} {attributes};count={len(candidates)}")
-        return jsonify({"ok": True, "candidates": candidates})
+        texts = [attributes] + [c.get("title") or "" for c in (candidates or [])]
+        metals = BladeMetalSuggestionService.suggest(texts)
+        return jsonify({"ok": True, "candidates": candidates, "metal_candidates": metals})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# -----------------------------------------------------
+# BULK CHANGE TOOL
+# -----------------------------------------------------
+
+@app.route("/admin/bulk-change", methods=["GET"])
+@admin_required
+def admin_bulk_change():
+    conn = get_db_connection()
+    knives = conn.execute(
+        """
+        SELECT id, brand, model, category, description, status, quantity, image, image_url, blade_metals
+        FROM knives
+        ORDER BY brand, model
+        """
+    ).fetchall()
+    conn.close()
+
+    rows = []
+    for k in knives:
+        img = (k["image"] or "").strip()
+        metals = (k["blade_metals"] or "").strip()
+        missing_image = (not img) and (not (k["image_url"] or "").strip())
+        missing_metals = (not metals) or (metals == "[]")
+        rows.append(
+            {
+                "id": k["id"],
+                "brand": k["brand"],
+                "model": k["model"],
+                "category": k["category"] or "",
+                "status": k["status"] or "",
+                "quantity": k["quantity"] or 0,
+                "image": img,
+                "image_url": (k["image_url"] or "").strip(),
+                "blade_metals": metals if metals else "[]",
+                "missing_image": missing_image,
+                "missing_blade_metals": missing_metals,
+            }
+        )
+
+    return render_template("admin_bulk_change.html", knives=rows)
+
+
+@app.route("/admin/api/bulk-change/apply", methods=["POST"])
+@admin_required
+def api_bulk_change_apply():
+    data = request.get_json() or {}
+    knife_id = data.get("knife_id")
+    if not knife_id:
+        return jsonify({"ok": False, "error": "Missing knife_id"}), 400
+    try:
+        knife_id = int(knife_id)
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid knife_id"}), 400
+
+    apply_image = bool(data.get("apply_image"))
+    apply_metals = bool(data.get("apply_metals"))
+    image_url = knife_input_service.clean_url(data.get("image_url", ""))
+    page_url = knife_input_service.clean_url(data.get("page_url", "")) or image_url
+    metals = data.get("blade_metals") or []
+    if not isinstance(metals, list):
+        return jsonify({"ok": False, "error": "blade_metals must be a list"}), 400
+    clean_metals = []
+    for m in metals:
+        s = knife_input_service.clean_text(str(m))
+        if not s:
+            continue
+        if s.lower() in {x.lower() for x in clean_metals}:
+            continue
+        clean_metals.append(s)
+
+    conn = get_db_connection()
+    row = conn.execute("SELECT id, brand, model, image, blade_metals FROM knives WHERE id = ?", (knife_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": "Knife not found"}), 404
+
+    updates = {}
+    if apply_image and image_url:
+        try:
+            out = AdminImageImportService.download_to_uploads(image_url)
+        except ValueError as ve:
+            conn.close()
+            return jsonify({"ok": False, "error": str(ve)}), 400
+        updates["image"] = out["filename"]
+        updates["image_url"] = ""
+        updates["image_source_url"] = page_url or out["source_url"]
+
+    if apply_metals:
+        updates["blade_metals"] = json.dumps(clean_metals[:24])
+
+    if updates:
+        sets = ", ".join([f"{k} = ?" for k in updates.keys()])
+        params = list(updates.values()) + [knife_id]
+        conn.execute(f"UPDATE knives SET {sets} WHERE id = ?", params)
+        conn.commit()
+
+    conn.close()
+    write_audit_log(
+        "bulk_change_apply",
+        "knife",
+        knife_id,
+        f"apply_image={int(apply_image)};apply_metals={int(apply_metals)};metals={len(clean_metals)}",
+    )
+    return jsonify({"ok": True, "updated": list(updates.keys())})
 
 
 # -----------------------------------------------------

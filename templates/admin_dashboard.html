@@ -11,7 +11,7 @@
             <svg viewBox="0 0 24 24" width="80" height="80" stroke="currentColor" stroke-width="2" fill="none"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
         </div>
         <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Unique Models</h3>
-        <p style="font-size: 2.2rem; font-weight: 700; color: var(--text-main);">{{ counts.total_items }}</p>
+        <p style="font-size: 2.2rem; font-weight: 700; color: var(--text-main);">{{ fmt_int(counts.total_items) }}</p>
     </div>
     
     <div class="card" style="margin-bottom: 0; display: flex; flex-direction: column; justify-content: center; position: relative; overflow: hidden;">
@@ -19,20 +19,20 @@
             <svg viewBox="0 0 24 24" width="80" height="80" stroke="currentColor" stroke-width="2" fill="none"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
         </div>
         <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Total Inventory</h3>
-        <p style="font-size: 2.2rem; font-weight: 700; color: var(--primary);">{{ counts.total_quantity }}</p>
+        <p style="font-size: 2.2rem; font-weight: 700; color: var(--primary);">{{ fmt_int(counts.total_quantity) }}</p>
     </div>
 
     <div class="card" style="margin-bottom: 0; display: flex; flex-direction: column; justify-content: center;">
         <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Total MSRP Value</h3>
         <p style="font-size: 1.8rem; font-weight: 700; color: #60a5fa;">
-            {% if totals.total_msrp > 0 %}₪{{ "%.2f"|format(totals.total_msrp) }}{% else %}N/A{% endif %}
+            {% if totals.total_msrp > 0 %}₪{{ fmt_money(totals.total_msrp) }}{% else %}N/A{% endif %}
         </p>
     </div>
 
     <div class="card" style="margin-bottom: 0; display: flex; flex-direction: column; justify-content: center;">
         <h3 style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Est. Sales Value</h3>
         <p style="font-size: 1.8rem; font-weight: 700; color: #818cf8;">
-            {% if totals.total_sale > 0 %}₪{{ "%.2f"|format(totals.total_sale) }}{% else %}N/A{% endif %}
+            {% if totals.total_sale > 0 %}₪{{ fmt_money(totals.total_sale) }}{% else %}N/A{% endif %}
         </p>
     </div>
 
@@ -53,7 +53,7 @@
                 {% for status in status_counts %}
                 <tr>
                     <td><span class="pill {{ status.status }}">{{ status.status.replace('_', ' ') }}</span></td>
-                    <td style="font-weight: 600;">{{ status.count }}</td>
+                    <td style="font-weight: 600;">{{ fmt_int(status.count) }}</td>
                 </tr>
                 {% else %}
                 <tr><td colspan="2">No data available.</td></tr>
@@ -74,16 +74,144 @@
             <tbody>
                 <tr>
                     <td>MSRP New Price</td>
-                    <td>{{ pricing_stats.has_msrp or 0 }} / {{ counts.total_items }}</td>
+                    <td>{{ fmt_int(pricing_stats.has_msrp or 0) }} / {{ fmt_int(counts.total_items) }}</td>
                 </tr>
 
                 <tr>
                     <td>Sale Price Set</td>
-                    <td>{{ pricing_stats.has_sale or 0 }} / {{ counts.total_items }}</td>
+                    <td>{{ fmt_int(pricing_stats.has_sale or 0) }} / {{ fmt_int(counts.total_items) }}</td>
                 </tr>
             </tbody>
         </table>
     </div>
+</div>
+
+<div class="header" style="margin-top: 40px;">
+    <h1>Shipment Tracking</h1>
+</div>
+
+<div class="card" style="max-width: 760px;">
+    <form method="POST" action="{{ url_for('admin_track_shipment') }}" style="display: flex; gap: 12px; align-items: end; flex-wrap: wrap;">
+        <div style="flex: 1; min-width: 250px;">
+            <label for="item_code" style="margin-bottom: 8px;">Israel Post Item Code</label>
+            <input id="item_code" name="item_code" type="text" placeholder="RS000776955S1" required style="width: 100%; text-transform: uppercase;">
+        </div>
+        <button class="btn" type="submit">Track Shipment</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2 style="margin-bottom: 20px; font-size: 1.2rem;">Tracked Shipments</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Item Code</th>
+                <th>Nickname</th>
+                <th>Category</th>
+                <th>Status</th>
+                <th>Last Event</th>
+                <th>Sender</th>
+                <th>Delivery Point</th>
+                <th>Updated</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for shipment in shipment_rows %}
+            <tr>
+                <td style="font-weight: 700;">
+                    {% if shipment.category_icon %}
+                    <img src="{{ shipment.category_icon }}" alt="category icon" style="width: 16px; height: 16px; vertical-align: text-bottom; margin-right: 6px;">
+                    {% endif %}
+                    {{ shipment.item_code }}
+                </td>
+                <td style="min-width: 230px;">
+                    <form method="POST" action="{{ url_for('admin_set_shipment_nickname', shipment_id=shipment.id) }}" style="display: flex; gap: 8px; align-items: center;">
+                        <input type="text" name="nickname" value="{{ shipment.nickname or '' }}" placeholder="הזן כינוי לחבילה" maxlength="80" style="min-width: 150px;">
+                        <button type="submit" class="btn btn-outline" style="padding: 7px 10px; font-size: 0.78rem;">Save</button>
+                    </form>
+                </td>
+                <td>
+                    {% if shipment.category_icon %}
+                    <img src="{{ shipment.category_icon }}" alt="category icon" style="width: 16px; height: 16px; vertical-align: text-bottom; margin-right: 6px;">
+                    {% endif %}
+                    {{ shipment.category_name or '-' }}
+                </td>
+                <td>{{ shipment.status_for_display or '-' }}</td>
+                <td>
+                    {% if shipment.last_event_icon %}
+                    <img src="{{ shipment.last_event_icon }}" alt="timeline icon" style="width: 16px; height: 16px; vertical-align: text-bottom; margin-right: 6px;">
+                    {% endif %}
+                    {{ shipment.last_event_desc or '-' }}
+                    {% if shipment.last_event_branch or shipment.last_event_city %}
+                    <div style="color: var(--text-muted); font-size: 0.8rem;">
+                        {{ shipment.last_event_branch }} {{ shipment.last_event_city }}
+                    </div>
+                    {% endif %}
+                </td>
+                <td>{{ shipment.sender_name or '-' }}</td>
+                <td>
+                    {% if shipment.delivery_type_icon %}
+                    <img src="{{ shipment.delivery_type_icon }}" alt="delivery icon" style="width: 16px; height: 16px; vertical-align: text-bottom; margin-right: 6px;">
+                    {% endif %}
+                    {{ shipment.delivery_type_desc or '-' }}
+                </td>
+                <td>{{ shipment.updated_at or '-' }}</td>
+                <td>
+                    <div style="display: flex; gap: 8px;">
+                        <button type="button" class="btn btn-outline" style="padding: 7px 11px; font-size: 0.8rem;" onclick="toggleShipmentLogs('{{ shipment.id }}')">View Logs</button>
+                        <form method="POST" action="{{ url_for('admin_refresh_shipment', shipment_id=shipment.id) }}">
+                            <button type="submit" class="btn btn-outline" style="padding: 7px 11px; font-size: 0.8rem;">Refresh</button>
+                        </form>
+                        <form method="POST" action="{{ url_for('admin_delete_shipment', shipment_id=shipment.id) }}" onsubmit="return confirm('Delete this tracked shipment?')">
+                            <button type="submit" class="btn btn-danger" style="padding: 7px 11px; font-size: 0.8rem;">Delete</button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            <tr id="shipment-logs-{{ shipment.id }}" style="display: none;">
+                <td colspan="9" style="background: #0b1017;">
+                    <div style="border: 1px solid var(--border); border-radius: 10px; overflow: hidden;">
+                        <div style="padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600;">
+                            חבילה / פריט דואר: {{ shipment.item_code }} {% if shipment.nickname %}- {{ shipment.nickname }}{% endif %}
+                        </div>
+                        <table style="margin: 0;">
+                            <thead>
+                                <tr>
+                                    <th>תאריך</th>
+                                    <th>קטגוריה</th>
+                                    <th>סטטוס</th>
+                                    <th>יחידת דואר</th>
+                                    <th>יישוב</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for event in shipment.timeline_events %}
+                                <tr>
+                                    <td>{{ event.date or '-' }}</td>
+                                    <td>
+                                        {% if event.icon %}
+                                        <img src="{{ event.icon }}" alt="timeline icon" style="width: 16px; height: 16px; vertical-align: text-bottom; margin-right: 6px;">
+                                        {% endif %}
+                                        {{ event.category or '-' }}
+                                    </td>
+                                    <td>{{ event.status or '-' }}</td>
+                                    <td>{{ event.branch or '-' }}</td>
+                                    <td>{{ event.city or '-' }}</td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="5">No tracking logs available.</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9">No tracked shipments yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </div>
 
 <!-- SECTION: Site Settings -->
@@ -151,6 +279,14 @@ async function toggleLandingPage() {
         console.error(e);
         toggle.checked = !toggle.checked; // Revert on error
     }
+}
+
+function toggleShipmentLogs(shipmentId) {
+    const row = document.getElementById(`shipment-logs-${shipmentId}`);
+    if (!row) {
+        return;
+    }
+    row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }
 </script>
 

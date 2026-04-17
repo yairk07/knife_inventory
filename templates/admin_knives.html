@@ -4,7 +4,7 @@
 <div class="header">
     <h1>Manage Knives</h1>
     <div style="display: flex; gap: 10px;">
-        <a href="{{ url_for('admin_bulk_pricing') }}" class="btn" style="background: #1c222e; color: var(--primary);">$ Bulk Pricing</a>
+        <a href="{{ url_for('admin_bulk_change') }}" class="btn" style="background: #1c222e; color: var(--primary);">Bulk Change</a>
         <a href="{{ url_for('admin_add_knife') }}" class="btn">+ Add New</a>
     </div>
 </div>
@@ -59,12 +59,12 @@
                 <td style="font-weight: 500;">{{ knife.brand }}</td>
                 <td>{{ knife.model }}</td>
                 <td><span class="pill {{ knife.status }}">{{ knife.status.replace('_', ' ') }}</span></td>
-                <td style="font-weight: 500;">{{ knife.quantity }}</td>
+                <td style="font-weight: 500;">{{ fmt_int(knife.quantity) }}</td>
                 <td style="color: #60a5fa;">
-                    {% if knife.msrp_new_price and knife.msrp_new_price > 0 %}₪{{ "%.2f"|format(knife.msrp_new_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
+                    {% if knife.msrp_new_price and knife.msrp_new_price > 0 %}₪{{ fmt_money(knife.msrp_new_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
                 </td>
                 <td style="color: var(--primary); font-weight: 600;">
-                    {% if knife.sale_price and knife.sale_price > 0 %}₪{{ "%.2f"|format(knife.sale_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
+                    {% if knife.sale_price and knife.sale_price > 0 %}₪{{ fmt_money(knife.sale_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
                 </td>
                 <td>
                     <button onclick="toggleFeatured({{ knife.id }}, this)" style="background: none; border: none; cursor: pointer; font-size: 1.2rem; color: {{ '#d4af37' if knife.is_featured else '#1e293b' }};">
