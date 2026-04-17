@@ -97,7 +97,11 @@
             <input id="item_code" name="item_code" type="text" placeholder="RS000776955S1" required style="width: 100%; text-transform: uppercase;">
         </div>
         <button class="btn" type="submit">Track Shipment</button>
+        <button class="btn btn-outline" type="submit" formaction="{{ url_for('admin_refresh_all_shipments') }}" formmethod="POST" formnovalidate>Refresh All Shipments</button>
     </form>
+    <p style="margin-top: 10px; color: var(--text-muted); font-size: 0.85rem;">
+        Auto refresh on page open: updated {{ fmt_int(auto_refreshed or 0) }}, failed {{ fmt_int(auto_failed or 0) }}.
+    </p>
 </div>
 
 <div class="card">

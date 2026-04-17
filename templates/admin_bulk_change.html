@@ -21,6 +21,14 @@
             </div>
         </div>
         <div style="display:flex; gap:14px; flex-wrap:wrap;">
+            <label style="display:flex; align-items:center; gap:8px; color: var(--text-muted);">
+                Apply mode for all knives:
+                <select id="bcGlobalApplyMode" style="padding:8px; border: 1px solid var(--border); border-radius: 8px; background: #0b1017; color: var(--text-main);">
+                    <option value="both" selected>Photo + blade material</option>
+                    <option value="image_only">Photo only</option>
+                    <option value="metals_only">Blade material only</option>
+                </select>
+            </label>
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted);">
                 <input type="checkbox" id="bcNeedPhoto" checked style="accent-color: var(--primary);">
                 Missing photo
@@ -110,6 +118,10 @@
                 <div style="font-weight: 700;">Auto search</div>
                 <button type="button" class="btn" id="bcSearchBtn">Search</button>
             </div>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); margin-top: 10px;">
+                <input type="checkbox" id="bcSearchOnlyMetals" style="accent-color: var(--primary);">
+                Search only blade material
+            </label>
             <div style="margin-top: 10px;">
                 <input id="bcKnifeAttributes" type="text" placeholder="attributes for this knife" style="width:100%; padding:12px; border: 1px solid var(--border); border-radius: 8px; background: #06090e; color: var(--text-main);">
             </div>
@@ -167,6 +179,7 @@
     var needSteel = document.getElementById('bcNeedSteel');
     var autoSearch = document.getElementById('bcAutoSearch');
     var globalAttr = document.getElementById('bcAttributes');
+    var globalApplyMode = document.getElementById('bcGlobalApplyMode');
     var rowsEl = document.getElementById('bcRows');
 
     var q = [];
@@ -175,6 +188,7 @@
     var selectedMetals = [];
     var perKnifeNoSteel = {};
     var perKnifeAttr = {};
+    var searchOnlyMetals = document.getElementById('bcSearchOnlyMetals');
 
     function byId(id) {
         for (var i = 0; i < KNIVES.length; i++) if (String(KNIVES[i].id) === String(id)) return KNIVES[i];
@@ -229,7 +243,57 @@
         picked = null;
         selectedMetals = [];
         document.getElementById('bcPicked').textContent = 'None';
-        document.getElementById('bcApplyNextBtn').disabled = true;
+        updateApplyButtonState();
+    }
+
+    function updateApplyButtonState() {
+        var applyImage = document.getElementById('bcApplyImage').checked;
+        var canApply = (!applyImage) || !!picked;
+        document.getElementById('bcApplyNextBtn').disabled = !canApply;
+    }
+
+    function applyGlobalModeToCurrentKnife() {
+        var mode = globalApplyMode.value;
+        var applyImageCb = document.getElementById('bcApplyImage');
+        var applyMetalsCb = document.getElementById('bcApplyMetals');
+        if (mode === 'image_only') {
+            applyImageCb.checked = true;
+            applyMetalsCb.checked = false;
+        } else if (mode === 'metals_only') {
+            applyImageCb.checked = false;
+            applyMetalsCb.checked = true;
+        } else {
+            applyImageCb.checked = true;
+            applyMetalsCb.checked = true;
+        }
+    }
+
+    function syncSearchModeUI() {
+        var onlyMetals = !!searchOnlyMetals.checked;
+        var applyImageCb = document.getElementById('bcApplyImage');
+        var applyMetalsCb = document.getElementById('bcApplyMetals');
+        var candidatesBox = document.getElementById('bcCandidates');
+        var pickedBox = document.getElementById('bcPicked');
+        var mode = globalApplyMode.value;
+        var modeLocksImage = mode === 'image_only' || mode === 'metals_only';
+        var modeLocksMetals = mode === 'image_only' || mode === 'metals_only';
+        if (onlyMetals) {
+            applyImageCb.checked = false;
+            applyImageCb.disabled = true;
+            applyMetalsCb.checked = true;
+            applyMetalsCb.disabled = true;
+            candidatesBox.style.display = 'none';
+            pickedBox.textContent = 'Image not required (blade material only mode)';
+            if (!selectedMetals.length) {
+                setStatus('Blade material only mode: search and pick steel suggestions, then apply.', 'var(--text-muted)');
+            }
+        } else {
+            applyImageCb.disabled = modeLocksImage;
+            applyMetalsCb.disabled = modeLocksMetals;
+            applyGlobalModeToCurrentKnife();
+            if (!picked) pickedBox.textContent = 'None';
+        }
+        updateApplyButtonState();
     }
 
     function renderCandidates(list) {
@@ -251,7 +315,7 @@
             card.addEventListener('click', function () {
                 picked = c;
                 document.getElementById('bcPicked').textContent = (c.title || 'Candidate').slice(0, 120);
-                document.getElementById('bcApplyNextBtn').disabled = false;
+                updateApplyButtonState();
             });
             box.appendChild(card);
         });
@@ -297,7 +361,12 @@
             var resp = await apiFetch('/admin/api/auto-search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ brand: knife.brand, model: knife.model, attributes: attrs })
+                body: JSON.stringify({
+                    brand: knife.brand,
+                    model: knife.model,
+                    attributes: attrs,
+                    search_only_metals: !!searchOnlyMetals.checked
+                })
             });
             var data = await resp.json();
             if (!resp.ok || !data.ok) {
@@ -310,7 +379,11 @@
             renderMetals(data.metal_candidates || []);
             var nc = (data.candidates || []).length;
             var nm = (data.metal_candidates || []).length;
-            setStatus(nc + ' candidates' + (nm ? '; ' + nm + ' steel hint(s)' : ''), '#22c55e');
+            if (searchOnlyMetals.checked) {
+                setStatus(nm ? (nm + ' steel hint(s)') : 'No steel hints found', nm ? '#22c55e' : '#f59e0b');
+            } else {
+                setStatus(nc + ' candidates' + (nm ? '; ' + nm + ' steel hint(s)' : ''), '#22c55e');
+            }
         } catch (e) {
             setStatus('Network error while searching', '#ef4444');
             renderCandidates([]);
@@ -344,11 +417,11 @@
         var noSteelCb = document.getElementById('bcKnifeNoSteel');
         noSteelCb.checked = noSteel;
 
-        document.getElementById('bcApplyImage').checked = !!needPhoto.checked;
-        document.getElementById('bcApplyMetals').checked = !!needSteel.checked;
+        applyGlobalModeToCurrentKnife();
         document.getElementById('bcKnifeAttributes').value = perKnifeAttr[String(knife.id)] || (globalAttr.value || '');
         resetPick();
         setStatus('Pick a candidate, then apply.', 'var(--text-muted)');
+        syncSearchModeUI();
         renderCandidates([]);
         renderMetals([]);
 
@@ -358,9 +431,12 @@
     async function applyCurrentAndNext() {
         var knife = byId(q[idx]);
         if (!knife) return;
-        if (!picked) return;
         var applyImage = document.getElementById('bcApplyImage').checked;
         var applyMetals = document.getElementById('bcApplyMetals').checked;
+        if (applyImage && !picked) {
+            setStatus('Pick a candidate image first, or uncheck Apply photo.', '#ef4444');
+            return;
+        }
         var noSteel = document.getElementById('bcKnifeNoSteel').checked;
         perKnifeNoSteel[String(knife.id)] = noSteel;
         if (noSteel) applyMetals = false;
@@ -374,8 +450,8 @@
                     knife_id: knife.id,
                     apply_image: applyImage,
                     apply_metals: applyMetals,
-                    image_url: picked.image_url || '',
-                    page_url: picked.page_url || picked.source_url || '',
+                    image_url: (picked && picked.image_url) ? picked.image_url : '',
+                    page_url: (picked && (picked.page_url || picked.source_url)) ? (picked.page_url || picked.source_url) : '',
                     blade_metals: selectedMetals || []
                 })
             });
@@ -434,6 +510,14 @@
     });
 
     document.getElementById('bcApplyNextBtn').addEventListener('click', applyCurrentAndNext);
+    document.getElementById('bcApplyImage').addEventListener('change', updateApplyButtonState);
+    searchOnlyMetals.addEventListener('change', syncSearchModeUI);
+    globalApplyMode.addEventListener('change', function () {
+        if (globalApplyMode.value === 'metals_only') {
+            searchOnlyMetals.checked = true;
+        }
+        syncSearchModeUI();
+    });
 
     document.getElementById('bcSkipBtn').addEventListener('click', function () {
         showWizardForQueueIndex(idx + 1);

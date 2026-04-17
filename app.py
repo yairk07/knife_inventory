@@ -39,14 +39,16 @@ secret_key = os.getenv("SECRET_KEY", "").strip()
 if not secret_key:
     raise RuntimeError("Missing SECRET_KEY in environment. Please set it in .env.")
 app.secret_key = secret_key
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = os.getenv("SESSION_COOKIE_SECURE", "0").strip() == "1"
 app.config['REMEMBER_COOKIE_HTTPONLY'] = True
 app.config['REMEMBER_COOKIE_SAMESITE'] = 'Lax'
 app.config['REMEMBER_COOKIE_SECURE'] = os.getenv("REMEMBER_COOKIE_SECURE", "0").strip() == "1"
-DB_NAME = "knives.db"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_NAME = os.path.join(BASE_DIR, "knives.db")
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
@@ -243,6 +245,36 @@ class KnifeAutoLookupService:
         "ebay.com": 8,
     }
 
+    def _clean_query_text(self, text):
+        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        return re.sub(r"[\"'`]+", "", normalized)
+
+    def _build_queries(self, brand, model, attributes):
+        brand_clean = self._clean_query_text(brand)
+        model_clean = self._clean_query_text(model)
+        attributes_clean = self._clean_query_text(attributes)
+        base = f"{brand_clean} {model_clean}".strip()
+        full = f"{base} {attributes_clean}".strip()
+        queries = [
+            f"{full} knife price".strip(),
+            f"{base} knife".strip(),
+            f"{base} price".strip(),
+            full,
+            base,
+        ]
+        seen = set()
+        unique = []
+        for q in queries:
+            q = re.sub(r"\s+", " ", q).strip()
+            if not q:
+                continue
+            key = q.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(q)
+        return unique
+
     def _from_cache(self, cache_key):
         item = self._cache.get(cache_key)
         if not item:
@@ -319,6 +351,14 @@ class KnifeAutoLookupService:
                 links.append({"href": href, "title": title, "snippet": snippet})
                 if len(links) >= max_results:
                     break
+            if not links:
+                for href in re.findall(r'<a href="(https?://[^"]+)"', html, flags=re.IGNORECASE):
+                    clean_href = href.strip()
+                    if not clean_href or "bing.com" in clean_href:
+                        continue
+                    links.append({"href": clean_href, "title": "", "snippet": ""})
+                    if len(links) >= max_results:
+                        break
         except Exception:
             return links
         return links
@@ -351,13 +391,28 @@ class KnifeAutoLookupService:
                 except Exception:
                     continue
                 image_url = (data.get("murl") or "").strip()
-                page_url = (data.get("purl") or "").strip()
+                page_url = (data.get("purl") or data.get("surl") or "").strip()
                 title = (data.get("t") or "").strip()
-                if not image_url or not page_url:
+                if not image_url:
                     continue
                 results.append({"image_url": image_url, "page_url": page_url, "title": title})
                 if len(results) >= max_results:
                     break
+            if not results:
+                raw_image_urls = re.findall(
+                    r'https?://[^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?',
+                    html,
+                    flags=re.IGNORECASE,
+                )
+                seen = set()
+                for image_url in raw_image_urls:
+                    key = image_url.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    results.append({"image_url": image_url, "page_url": "", "title": ""})
+                    if len(results) >= max_results:
+                        break
         except Exception:
             return results
         return results
@@ -521,15 +576,15 @@ class KnifeAutoLookupService:
         for item in self._search_bing_images(query, max_results=14):
             image_url = item.get("image_url", "")
             page_url = item.get("page_url", "")
-            if not image_url or not page_url or image_url in seen_images:
+            if not image_url or image_url in seen_images:
                 continue
-            domain = self._normalize_domain(page_url)
-            if any(blocked in domain for blocked in self._blocked_domains):
+            domain = self._normalize_domain(page_url) if page_url else ""
+            if domain and any(blocked in domain for blocked in self._blocked_domains):
                 continue
             seen_images.add(image_url)
             price = None
             currency = None
-            source_url = page_url
+            source_url = page_url or image_url
             for hint in price_hints:
                 if hint["domain"] and hint["domain"] == domain:
                     price = hint["price"]
@@ -548,83 +603,89 @@ class KnifeAutoLookupService:
                 break
         return out
 
+    def _collect_candidates_from_query(self, query, seen_images, price_hints, cap):
+        out = []
+        if cap <= 0:
+            return out
+        out.extend(self._bing_image_candidates(query, price_hints, seen_images, cap))
+        if len(out) >= cap:
+            return out[:cap]
+        rows = self._search_links(query, max_results=20)
+        for row in rows[:16]:
+            if len(out) >= cap:
+                break
+            page_url = (row.get("href") or "").strip()
+            if not page_url.startswith(("http://", "https://")):
+                continue
+            domain = self._normalize_domain(page_url)
+            if any(blocked in domain for blocked in self._blocked_domains):
+                continue
+            try:
+                resp = requests.get(page_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+                if resp.status_code >= 400:
+                    continue
+                html = resp.text[:260000]
+            except Exception:
+                continue
+            product = self._extract_jsonld_product(html)
+            title = (row.get("title") or self._extract_title(html))
+            image_url = ""
+            price = None
+            currency = None
+            if product:
+                title = product.get("title") or title
+                image_url = product.get("image_url") or ""
+                price = product.get("price")
+                currency = product.get("currency")
+            if not image_url:
+                image_url = self._fetch_og_image(page_url)
+            if not image_url or image_url in seen_images:
+                continue
+            seen_images.add(image_url)
+            source_url = page_url
+            if price is None:
+                page_price, page_currency = self._extract_price_from_html(html)
+                if page_price is not None:
+                    price = page_price
+                    currency = page_currency
+            if price is None:
+                for hint in price_hints:
+                    if hint["domain"] and hint["domain"] == domain:
+                        price = hint["price"]
+                        currency = hint["currency"]
+                        source_url = hint["source_url"] or page_url
+                        break
+            out.append({
+                "title": (title or "")[:180],
+                "image_url": image_url,
+                "page_url": page_url,
+                "source_url": source_url,
+                "price": price,
+                "currency": currency
+            })
+        return out
+
     def search(self, brand, model, attributes):
-        base_query = f"{brand} {model} knife".strip()
-        full_query = f"{base_query} {attributes}".strip()
+        queries = self._build_queries(brand, model, attributes)
         cache_key = f"{brand.lower()}|{model.lower()}|{attributes.lower()}"
         cached = self._from_cache(cache_key)
         if cached is not None:
             return cached
 
-        deadline = time.monotonic() + 18.0
+        deadline = time.monotonic() + 24.0
         price_hints = self._quick_price_hints(brand, model)
         candidates = []
         seen_images = set()
 
-        for q in (full_query, base_query):
-            if time.monotonic() > deadline or len(candidates) >= 8:
+        for q in queries:
+            if time.monotonic() > deadline or len(candidates) >= 16:
                 break
-            candidates.extend(self._bing_image_candidates(q, price_hints, seen_images, 8 - len(candidates)))
+            cap = 16 - len(candidates)
+            candidates.extend(self._collect_candidates_from_query(q, seen_images, price_hints, cap))
 
-        if len(candidates) < 6 and time.monotonic() < deadline:
-            rows = self._search_links(full_query, max_results=14)
-            for row in rows[:10]:
-                if time.monotonic() > deadline:
-                    break
-                page_url = (row.get("href") or "").strip()
-                if not page_url.startswith(("http://", "https://")):
-                    continue
-                domain = self._normalize_domain(page_url)
-                if any(blocked in domain for blocked in self._blocked_domains):
-                    continue
-                try:
-                    resp = requests.get(page_url, timeout=4, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
-                    if resp.status_code >= 400:
-                        continue
-                    html = resp.text[:200000]
-                except Exception:
-                    continue
-                product = self._extract_jsonld_product(html)
-                title = (row.get("title") or self._extract_title(html))
-                image_url = ""
-                price = None
-                currency = None
-                if product:
-                    title = product.get("title") or title
-                    image_url = product.get("image_url") or ""
-                    price = product.get("price")
-                    currency = product.get("currency")
-                if not image_url:
-                    image_url = self._fetch_og_image(page_url)
-                if not image_url or image_url in seen_images:
-                    continue
-                seen_images.add(image_url)
-                source_url = page_url
-                if price is None:
-                    page_price, page_currency = self._extract_price_from_html(html)
-                    if page_price is not None:
-                        price = page_price
-                        currency = page_currency
-                if price is None:
-                    for hint in price_hints:
-                        if hint["domain"] and hint["domain"] == domain:
-                            price = hint["price"]
-                            currency = hint["currency"]
-                            source_url = hint["source_url"] or page_url
-                            break
-                candidates.append({
-                    "title": (title or "")[:180],
-                    "image_url": image_url,
-                    "page_url": page_url,
-                    "source_url": source_url,
-                    "price": price,
-                    "currency": currency
-                })
-                if len(candidates) >= 12:
-                    break
-
-        if not candidates:
-            raise RuntimeError("No good candidates found. Try different attributes (e.g. blade shape or handle material).")
+        if not candidates and queries:
+            broad = self._clean_query_text(f"{brand} {model}")
+            candidates.extend(self._collect_candidates_from_query(broad, seen_images, price_hints, 8))
 
         for c in candidates:
             c["score"] = self._score_candidate(c, brand, model, attributes)
@@ -714,6 +775,53 @@ class ShipmentTrackingService:
 
 
 shipment_tracking_service = ShipmentTrackingService()
+shipment_refresh_lock = threading.Lock()
+
+
+def refresh_all_shipments():
+    refreshed = 0
+    failed = 0
+    with shipment_refresh_lock:
+        conn = get_db_connection()
+        rows = conn.execute("SELECT id, item_code FROM shipment_tracking ORDER BY id").fetchall()
+        conn.close()
+        now = datetime.utcnow().isoformat(timespec="seconds")
+        for row in rows:
+            shipment_id = row["id"]
+            item_code = (row["item_code"] or "").strip()
+            if not item_code:
+                failed += 1
+                continue
+            try:
+                payload = shipment_tracking_service.fetch_tracking_data(item_code)
+                summary = shipment_tracking_service.parse_summary(payload)
+                conn = get_db_connection()
+                conn.execute(
+                    """
+                    UPDATE shipment_tracking
+                    SET category_name = ?, status_for_display = ?, sender_name = ?, delivery_type_desc = ?,
+                        last_event_desc = ?, last_event_branch = ?, last_event_city = ?, raw_payload = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        summary["category_name"],
+                        summary["status_for_display"],
+                        summary["sender_name"],
+                        summary["delivery_type_desc"],
+                        summary["last_event_desc"],
+                        summary["last_event_branch"],
+                        summary["last_event_city"],
+                        json.dumps(payload, ensure_ascii=False),
+                        now,
+                        shipment_id,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+                refreshed += 1
+            except Exception:
+                failed += 1
+    return refreshed, failed
 
 
 class BladeMetalSuggestionService:
@@ -1319,6 +1427,8 @@ def find_knife_match():
 @app.route("/admin", methods=["GET"])
 @admin_required
 def admin_dashboard():
+    auto_refreshed, auto_failed = refresh_all_shipments()
+
     conn = get_db_connection()
     totals = conn.execute("""
         SELECT
@@ -1395,7 +1505,9 @@ def admin_dashboard():
         status_counts=status_counts,
         pricing_stats=pricing_stats,
         shipment_rows=shipment_rows,
-        landing_page_enabled=landing_page_enabled
+        landing_page_enabled=landing_page_enabled,
+        auto_refreshed=auto_refreshed,
+        auto_failed=auto_failed,
     )
 
 
@@ -1695,6 +1807,15 @@ def admin_set_shipment_nickname(shipment_id):
     return redirect(url_for("admin_dashboard"))
 
 
+@app.route("/admin/shipments/refresh-all", methods=["POST"])
+@admin_required
+def admin_refresh_all_shipments():
+    refreshed, failed = refresh_all_shipments()
+    write_audit_log("shipment_refresh_all", "shipment", None, f"refreshed={refreshed};failed={failed}")
+    flash(f"Refresh all completed. Updated: {refreshed}, failed: {failed}.", "success")
+    return redirect(url_for("admin_dashboard"))
+
+
 @app.route("/admin/knives/toggle-featured", methods=["POST"])
 @admin_required
 def admin_toggle_featured():
@@ -1791,16 +1912,24 @@ def api_auto_search():
     brand = knife_input_service.clean_text(data.get("brand", ""))
     model = knife_input_service.clean_text(data.get("model", ""))
     attributes = knife_input_service.clean_text(data.get("attributes", ""))
+    search_only_metals = bool(data.get("search_only_metals"))
     if not brand or not model:
         return jsonify({"error": "Brand and model are required"}), 400
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(knife_auto_lookup_service.search, brand, model, attributes)
-            try:
-                candidates = fut.result(timeout=22)
-            except concurrent.futures.TimeoutError:
-                return jsonify({"ok": False, "error": "Search timed out. Try again or use shorter keywords."}), 504
-        write_audit_log("auto_search", "knife", None, f"query={brand} {model} {attributes};count={len(candidates)}")
+        candidates = []
+        if not search_only_metals:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(knife_auto_lookup_service.search, brand, model, attributes)
+                try:
+                    candidates = fut.result(timeout=22)
+                except concurrent.futures.TimeoutError:
+                    return jsonify({"ok": False, "error": "Search timed out. Try again or use shorter keywords."}), 504
+        write_audit_log(
+            "auto_search",
+            "knife",
+            None,
+            f"query={brand} {model} {attributes};only_metals={int(search_only_metals)};count={len(candidates)}",
+        )
         texts = [attributes] + [c.get("title") or "" for c in (candidates or [])]
         metals = BladeMetalSuggestionService.suggest(texts)
         return jsonify({"ok": True, "candidates": candidates, "metal_candidates": metals})
@@ -1984,11 +2113,113 @@ def admin_bulk_pricing_apply():
 # PRICE EXPORT TOOL
 # -----------------------------------------------------
 
+class AdminExportService:
+    NO_BRAND_VALUES = {"", "no brand", "unknown", "none"}
+
+    def clean_mode(self, value):
+        mode = knife_input_service.clean_text(value, "price").lower()
+        return mode if mode in {"price", "images", "full"} else "price"
+
+    def clean_bool(self, value):
+        return str(value).strip() in {"1", "true", "on", "yes"}
+
+    def brand_is_missing(self, brand):
+        return knife_input_service.clean_text(brand).lower() in self.NO_BRAND_VALUES
+
+    def resolve_price(self, knife_row):
+        sale = knife_row["sale_price"] if knife_row["sale_price"] and knife_row["sale_price"] > 0 else 0
+        msrp = knife_row["msrp_new_price"] if knife_row["msrp_new_price"] and knife_row["msrp_new_price"] > 0 else 0
+        return sale if sale > 0 else msrp
+
+    def image_for_export(self, knife_row):
+        image_url = knife_input_service.clean_url(knife_row["image_url"])
+        if image_url:
+            return image_url
+        image_name = knife_input_service.clean_text(knife_row["image"])
+        if image_name:
+            safe_name = os.path.basename(image_name)
+            ext = safe_name.rsplit(".", 1)[1].lower() if "." in safe_name else ""
+            file_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
+            if ext in ALLOWED_EXTENSIONS and os.path.isfile(file_path):
+                return url_for("static", filename=f"uploads/{safe_name}")
+        return ""
+
+    def build_catalog_item(self, knife_row):
+        price_value = self.resolve_price(knife_row)
+        return {
+            "brand": knife_input_service.clean_text(knife_row["brand"]),
+            "model": knife_input_service.clean_text(knife_row["model"]),
+            "price_value": price_value,
+            "price_display": f"₪{price_value:,.2f}" if price_value and price_value > 0 else "",
+            "image_url": self.image_for_export(knife_row),
+        }
+
+    def filter_items(self, catalog_items, omit_no_brand, omit_no_price):
+        filtered = []
+        for item in catalog_items:
+            if omit_no_brand and self.brand_is_missing(item["brand"]):
+                continue
+            if omit_no_price and not item["price_display"]:
+                continue
+            filtered.append(item)
+        return filtered
+
+    def build_export_text(self, catalog_items, hide_price, hide_brand):
+        lines = []
+        for item in catalog_items:
+            model = item["model"] or "—"
+            brand = item["brand"]
+            if hide_brand or self.brand_is_missing(brand):
+                base = model
+            else:
+                base = f"{brand} - {model}"
+            if hide_price:
+                lines.append(base)
+            elif item["price_display"]:
+                lines.append(f"{base}: {item['price_display']}")
+            else:
+                lines.append(f"{base}: No price")
+        return "\n".join(lines) if lines else "No knives match the current filters."
+
+    def build_doc_html(self, mode, catalog_items, hide_price, hide_brand):
+        title_map = {"price": "Text list", "images": "Image catalog", "full": "Full catalog"}
+        header = (
+            "<html><head><meta charset='utf-8'></head><body>"
+            "<h2>Blade &amp; Steel Catalog</h2>"
+            f"<p>{title_map.get(mode, 'Text list')} · {len(catalog_items)} item(s)</p>"
+        )
+        footer = "</body></html>"
+        if mode == "price":
+            text = self.build_export_text(catalog_items, hide_price=hide_price, hide_brand=hide_brand)
+            return f"{header}<pre>{text}</pre>{footer}"
+        rows = []
+        for item in catalog_items:
+            brand_html = "" if hide_brand else f"<div><strong>{item['brand'] or '—'}</strong></div>"
+            model_html = f"<div>{item['model'] or '—'}</div>"
+            price_html = ""
+            if not hide_price:
+                price_html = f"<div>{item['price_display'] or 'No price'}</div>"
+            image_html = f"<div>{item['image_url']}</div>" if item["image_url"] else "<div>No photo</div>"
+            if mode == "images":
+                rows.append(f"<li>{image_html}</li>")
+            else:
+                rows.append(f"<li>{brand_html}{model_html}{price_html}{image_html}</li>")
+        return f"{header}<ul>{''.join(rows)}</ul>{footer}"
+
+
+admin_export_service = AdminExportService()
+
+
 @app.route("/admin/export", methods=["GET"])
 @admin_required
 def admin_export():
     brand_filter = request.args.get("brand", "").strip()
     category_filter = request.args.get("category", "").strip()
+    export_mode = admin_export_service.clean_mode(request.args.get("mode", "price"))
+    omit_no_brand = admin_export_service.clean_bool(request.args.get("omit_no_brand", "0"))
+    omit_no_price = admin_export_service.clean_bool(request.args.get("omit_no_price", "0"))
+    hide_price = admin_export_service.clean_bool(request.args.get("hide_price", "0"))
+    hide_brand = admin_export_service.clean_bool(request.args.get("hide_brand", "0"))
 
     conn = get_db_connection()
     
@@ -1997,7 +2228,7 @@ def admin_export():
     categories = [row['category'] for row in cats_db]
     brands = [row['brand'] for row in brands_db]
 
-    query = "SELECT brand, model, sale_price, msrp_new_price, quantity FROM knives WHERE status != 'sold'"
+    query = "SELECT brand, model, sale_price, msrp_new_price, quantity, image, image_url FROM knives WHERE status != 'sold'"
     params = []
 
     if brand_filter:
@@ -2012,26 +2243,79 @@ def admin_export():
     knives = conn.execute(query, params).fetchall()
     conn.close()
 
-    export_lines = []
-    if knives:
-        for k in knives:
-            price = k['sale_price'] if k['sale_price'] and k['sale_price'] > 0 else k['msrp_new_price']
-            if price and price > 0:
-                brand = k['brand'].strip() if k['brand'] else ''
-                if not brand or brand.lower() in ('no brand', 'unknown', 'none'):
-                    line = f"{k['model']}: ₪{price:,.2f}"
-                else:
-                    line = f"{brand} - {k['model']}: ₪{price:,.2f}"
-                export_lines.append(line)
-        
-    export_text = "\n".join(export_lines) if export_lines else "No knives match the filter or have pricing data."
+    catalog_items = [admin_export_service.build_catalog_item(k) for k in knives]
+    catalog_items = admin_export_service.filter_items(
+        catalog_items,
+        omit_no_brand=omit_no_brand,
+        omit_no_price=omit_no_price,
+    )
+    export_text = admin_export_service.build_export_text(
+        catalog_items,
+        hide_price=hide_price,
+        hide_brand=hide_brand,
+    )
+    catalog_doc_url = url_for(
+        "admin_export_doc",
+        mode=export_mode,
+        brand=brand_filter,
+        category=category_filter,
+        omit_no_brand=1 if omit_no_brand else 0,
+        omit_no_price=1 if omit_no_price else 0,
+        hide_price=1 if hide_price else 0,
+        hide_brand=1 if hide_brand else 0,
+    )
 
     return render_template("admin_export.html", 
+                           export_mode=export_mode,
+                           catalog_items=catalog_items,
                            export_text=export_text,
                            brands=brands,
                            categories=categories,
                            brand_filter=brand_filter,
-                           category_filter=category_filter)
+                           category_filter=category_filter,
+                           omit_no_brand=omit_no_brand,
+                           omit_no_price=omit_no_price,
+                           hide_price=hide_price,
+                           hide_brand=hide_brand,
+                           catalog_doc_url=catalog_doc_url)
+
+
+@app.route("/admin/export/catalog.doc", methods=["GET"])
+@admin_required
+def admin_export_doc():
+    brand_filter = request.args.get("brand", "").strip()
+    category_filter = request.args.get("category", "").strip()
+    export_mode = admin_export_service.clean_mode(request.args.get("mode", "price"))
+    omit_no_brand = admin_export_service.clean_bool(request.args.get("omit_no_brand", "0"))
+    omit_no_price = admin_export_service.clean_bool(request.args.get("omit_no_price", "0"))
+    hide_price = admin_export_service.clean_bool(request.args.get("hide_price", "0"))
+    hide_brand = admin_export_service.clean_bool(request.args.get("hide_brand", "0"))
+
+    conn = get_db_connection()
+    query = "SELECT brand, model, sale_price, msrp_new_price, quantity, image, image_url FROM knives WHERE status != 'sold'"
+    params = []
+    if brand_filter:
+        query += " AND brand = ?"
+        params.append(brand_filter)
+    if category_filter:
+        query += " AND category = ?"
+        params.append(category_filter)
+    query += " ORDER BY brand, model"
+    knives = conn.execute(query, params).fetchall()
+    conn.close()
+
+    catalog_items = [admin_export_service.build_catalog_item(k) for k in knives]
+    catalog_items = admin_export_service.filter_items(catalog_items, omit_no_brand=omit_no_brand, omit_no_price=omit_no_price)
+    doc_html = admin_export_service.build_doc_html(
+        mode=export_mode,
+        catalog_items=catalog_items,
+        hide_price=hide_price,
+        hide_brand=hide_brand,
+    )
+    response = make_response(doc_html)
+    response.headers["Content-Type"] = "application/msword; charset=utf-8"
+    response.headers["Content-Disposition"] = "attachment; filename=knife-catalog.doc"
+    return response
 
 
 # -----------------------------------------------------

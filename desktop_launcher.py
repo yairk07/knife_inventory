@@ -19,7 +19,7 @@ class DesktopLauncher:
 
     def run(self):
         threading.Timer(1.0, self._open_browser).start()
-        app.run(host=self.host, port=self.port, debug=self.debug, use_reloader=False)
+        app.run(host=self.host, port=self.port, debug=self.debug, use_reloader=self.debug)
 
 
 if __name__ == "__main__":

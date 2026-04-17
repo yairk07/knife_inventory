@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist ".venv\Scripts\python.exe" (
+if not exist ".venv\Scripts\pythonw.exe" (
     echo Missing virtual environment at .venv
     echo Create it once with:
     echo python -m venv .venv
@@ -11,4 +11,5 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-".venv\Scripts\python.exe" "desktop_launcher.py"
+start "" ".venv\Scripts\pythonw.exe" "desktop_launcher.py"
+exit /b 0
