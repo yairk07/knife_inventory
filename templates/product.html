@@ -39,6 +39,13 @@
                     <strong>{{ blade_steels | join(', ') }}</strong>
                 </li>
                 {% endif %}
+                {% set blp = blade_length_parts_knife(knife) %}
+                {% if blp %}
+                <li>
+                    <span>{{ blp.label }}</span>
+                    <strong>{{ blp.value }}</strong>
+                </li>
+                {% endif %}
                 <li>
                     <span>{{ tr('category') }}</span>
                     <strong>{{ knife.category if knife.category else tr('na') }}</strong>

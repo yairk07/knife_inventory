@@ -1,4 +1,5 @@
 import os
+import socket
 import sqlite3
 import uuid
 import base64
@@ -17,6 +18,8 @@ from collections import defaultdict, deque
 from urllib.parse import urlparse, parse_qs, unquote
 import requests
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, make_response
+from werkzeug.exceptions import HTTPException
+from werkzeug.routing.exceptions import RoutingException
 from werkzeug.utils import secure_filename
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
@@ -53,6 +56,26 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+DB_BACKUP_DIR = os.path.join(BASE_DIR, "db_backups")
+os.makedirs(DB_BACKUP_DIR, exist_ok=True)
+
+
+class FlaskListenPortResolver:
+    def resolve(self, host, preferred_port, span=48):
+        """First bindable port starting at preferred_port (avoids silent clashes on FLASK_PORT)."""
+        bind_host = host or "127.0.0.1"
+        end = preferred_port + span
+        for port in range(preferred_port, end):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                try:
+                    sock.bind((bind_host, port))
+                    return port
+                except OSError:
+                    continue
+        raise RuntimeError(f"No free TCP port on {bind_host!r} from {preferred_port} to {end - 1}")
+
+
+flask_listen_port_resolver = FlaskListenPortResolver()
 
 app.config['GOOGLE_CLIENT_ID'] = os.getenv("GOOGLE_CLIENT_ID", "")
 app.config['GOOGLE_CLIENT_SECRET'] = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -166,10 +189,27 @@ def is_server_stored_image_name(name):
     return bool(name and STORED_IMAGE_NAME_RE.fullmatch(name))
 
 
+def ensure_sale_price_history_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sale_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            knife_id INTEGER NOT NULL,
+            old_sale REAL NOT NULL,
+            new_sale REAL NOT NULL,
+            source TEXT NOT NULL,
+            user_email TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 def get_db_connection(timeout=30):
     conn = sqlite3.connect(DB_NAME, timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout = {int(max(1, timeout) * 1000)}")
+    ensure_sale_price_history_schema(conn)
     return conn
 
 
@@ -181,6 +221,12 @@ class KnifeInputService:
         try:
             cleaned = float(str(value).strip())
             return round(max(0.0, cleaned), 2)
+        except (TypeError, ValueError):
+            return fallback
+
+    def parse_signed_decimal(self, value, fallback=0.0):
+        try:
+            return round(float(str(value).strip()), 2)
         except (TypeError, ValueError):
             return fallback
 
@@ -226,6 +272,79 @@ class NumberFormatService:
 
 
 number_format_service = NumberFormatService()
+
+
+class SalePriceHistoryService:
+    @staticmethod
+    def backup_catalog():
+        os.makedirs(DB_BACKUP_DIR, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        fname = f"knives_{stamp}.db"
+        dest = os.path.join(DB_BACKUP_DIR, fname)
+        try:
+            src = sqlite3.connect(DB_NAME, timeout=120)
+            try:
+                dst = sqlite3.connect(dest)
+                try:
+                    src.backup(dst)
+                    dst.commit()
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+        except (OSError, sqlite3.Error):
+            return None
+        return fname
+
+    @staticmethod
+    def record(conn, knife_id, old_sale, new_sale, source, user_email):
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        conn.execute(
+            """
+            INSERT INTO sale_price_history (knife_id, old_sale, new_sale, source, user_email, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (knife_id, float(old_sale), float(new_sale), source, (user_email or "").strip(), now),
+        )
+
+
+class BulkPricingService:
+    @staticmethod
+    def msrp_base(row):
+        msrp = float(row["msrp_new_price"] or 0)
+        if msrp > 0:
+            return msrp
+        return float(row["estimated_value"] or 0)
+
+    @staticmethod
+    def current_sale(row):
+        s = float(row["sale_price"] or 0)
+        return s if s > 0 else 0.0
+
+    @staticmethod
+    def compute_new_sale(mode, row, amount):
+        base = BulkPricingService.msrp_base(row)
+        sale = BulkPricingService.current_sale(row)
+        if mode == "msrp_fixed":
+            if base <= 0:
+                return None
+            return base + amount
+        if mode == "msrp_percent":
+            if base <= 0:
+                return None
+            return base * (1 + amount / 100.0)
+        if mode == "sale_percent":
+            ref = sale if sale > 0 else base
+            if ref <= 0:
+                return None
+            return ref * (1 + amount / 100.0)
+        return None
+
+    @staticmethod
+    def snap_to_fifty_grid(value):
+        if value is None or value <= 0:
+            return 0.0
+        return float(int(value / 50.0 + 0.5) * 50)
 
 
 class KnifeAutoLookupService:
@@ -999,6 +1118,10 @@ def init_db():
                 except sqlite3.OperationalError:
                     pass
                 try:
+                    conn.execute("ALTER TABLE knives ADD COLUMN blade_length_cm REAL NOT NULL DEFAULT 0")
+                except sqlite3.OperationalError:
+                    pass
+                try:
                     conn.execute("ALTER TABLE shipment_tracking ADD COLUMN nickname TEXT DEFAULT ''")
                 except sqlite3.OperationalError:
                     pass
@@ -1045,10 +1168,41 @@ def inject_storefront_i18n():
     def tr(key):
         return storefront_locale_service.translate(key, lang)
 
+    def _row_blade_cm_positive(row):
+        if row is None:
+            return None
+        try:
+            raw = row["blade_length_cm"]
+        except (KeyError, TypeError, IndexError):
+            return None
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+
+    def blade_length_parts(cm):
+        return storefront_locale_service.blade_length_parts(cm, lang)
+
+    def blade_length_card_line(cm):
+        return storefront_locale_service.blade_length_card_line(cm, lang)
+
+    def blade_length_parts_knife(row):
+        cm = _row_blade_cm_positive(row)
+        return storefront_locale_service.blade_length_parts(cm, lang) if cm is not None else None
+
+    def blade_length_card_line_knife(row):
+        cm = _row_blade_cm_positive(row)
+        return storefront_locale_service.blade_length_card_line(cm, lang) if cm is not None else ""
+
     return {
         "ui_lang": lang,
         "ui_dir": "rtl" if lang == "he" else "ltr",
         "tr": tr,
+        "blade_length_parts": blade_length_parts,
+        "blade_length_card_line": blade_length_card_line,
+        "blade_length_parts_knife": blade_length_parts_knife,
+        "blade_length_card_line_knife": blade_length_card_line_knife,
         "fmt_int": number_format_service.format_int,
         "fmt_money": number_format_service.format_money,
     }
@@ -1076,6 +1230,26 @@ def csrf_protect():
 @app.after_request
 def apply_security_headers(response):
     return app_security_service.add_security_headers(response)
+
+
+def _write_error_log(exc):
+    try:
+        from flask import has_request_context
+        path = "?"
+        if has_request_context():
+            try:
+                path = request.path
+            except RuntimeError:
+                path = "?"
+        log_path = os.path.join(BASE_DIR, "knife_inventory_errors.log")
+        import traceback
+        tb = getattr(exc, "__traceback__", None)
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"\n--- {datetime.now(timezone.utc).isoformat()} {path!r} ---\n")
+            fh.writelines(traceback.format_exception(type(exc), exc, tb))
+        app.logger.exception("Error on %s", path, exc_info=exc)
+    except Exception:
+        pass
 
 
 def write_audit_log(action, entity_type, entity_id=None, details=""):
@@ -1586,12 +1760,35 @@ STATUSES = [
     {"key": "cart",          "label": "Cart",           "color": "#eab308"},
 ]
 
+
+class AdminInventoryFilterService:
+    VALID_MISSING = frozenset({"blade_length", "blade_metals", "image", "sale_price", "description"})
+
+    @classmethod
+    def append_missing_sql(cls, query, params, missing_key):
+        if not missing_key or missing_key not in cls.VALID_MISSING:
+            return query, params
+        p = list(params)
+        if missing_key == "blade_length":
+            query += " AND (COALESCE(blade_length_cm, 0) <= 0)"
+        elif missing_key == "blade_metals":
+            query += " AND (blade_metals IS NULL OR TRIM(blade_metals) IN ('', '[]'))"
+        elif missing_key == "image":
+            query += " AND ((TRIM(COALESCE(image, '')) = '') AND (TRIM(COALESCE(image_url, '')) = ''))"
+        elif missing_key == "sale_price":
+            query += " AND (COALESCE(sale_price, 0) <= 0)"
+        elif missing_key == "description":
+            query += " AND (description IS NULL OR TRIM(description) = '')"
+        return query, p
+
+
 @app.route("/admin/inventory", methods=["GET"])
 @admin_required
 def admin_inventory():
     brand_filter = request.args.get("brand", "").strip()
     status_filter = request.args.get("status", "").strip()
     search_q = request.args.get("q", "").strip()
+    missing_filter = request.args.get("missing", "").strip()
 
     conn = get_db_connection()
     brands_db = conn.execute("SELECT DISTINCT brand FROM knives WHERE brand != '' ORDER BY brand").fetchall()
@@ -1609,6 +1806,7 @@ def admin_inventory():
         query += " AND (brand LIKE ? OR model LIKE ?)"
         lq = f"%{search_q}%"
         params.extend([lq, lq])
+    query, params = AdminInventoryFilterService.append_missing_sql(query, params, missing_filter)
 
     query += " ORDER BY brand, model"
     knives = conn.execute(query, params).fetchall()
@@ -1620,7 +1818,8 @@ def admin_inventory():
                            statuses=STATUSES,
                            brand_filter=brand_filter,
                            status_filter=status_filter,
-                           search_q=search_q)
+                           search_q=search_q,
+                           missing_filter=missing_filter)
 
 
 @app.route("/admin/inventory/update-status", methods=["POST"])
@@ -2051,7 +2250,9 @@ def api_bulk_change_apply():
 @admin_required
 def admin_bulk_pricing():
     conn = get_db_connection()
-    knives = conn.execute("SELECT id, brand, model, msrp_new_price, cost_price, sale_price, quantity FROM knives ORDER BY brand, model").fetchall()
+    knives = conn.execute(
+        "SELECT id, brand, model, msrp_new_price, estimated_value, cost_price, sale_price, quantity FROM knives ORDER BY brand, model"
+    ).fetchall()
     conn.close()
     return render_template("admin_bulk_pricing.html", knives=knives)
 
@@ -2060,53 +2261,127 @@ def admin_bulk_pricing():
 @admin_required
 def admin_bulk_pricing_apply():
     mode = knife_input_service.clean_text(request.form.get("mode", ""))
-    amount = request.form.get("amount", "0")
+    amount = knife_input_service.parse_signed_decimal(request.form.get("amount", "0"))
+    apply_all = request.form.get("apply_all") == "1"
     knife_ids = request.form.getlist("knife_ids")
-
-    try:
-        amount = knife_input_service.clean_float(amount)
-    except Exception:
-        flash("Invalid amount value.")
+    if apply_all:
+        conn_ids = get_db_connection()
+        knife_ids = [str(r["id"]) for r in conn_ids.execute("SELECT id FROM knives ORDER BY id").fetchall()]
+        conn_ids.close()
+    if mode not in {"msrp_fixed", "msrp_percent", "sale_percent"}:
+        flash("Select a pricing mode.", "error")
         return redirect(url_for("admin_bulk_pricing"))
-
     if not knife_ids:
-        flash("No knives selected.")
+        flash("No knives selected.", "error")
         return redirect(url_for("admin_bulk_pricing"))
-
+    SalePriceHistoryService.backup_catalog()
+    actor = (current_user.email if current_user.is_authenticated else "") or ""
     conn = get_db_connection()
     updated = 0
-
-    for kid in knife_ids:
-        kid = int(kid)
-        knife = conn.execute("SELECT msrp_new_price, cost_price FROM knives WHERE id = ?", (kid,)).fetchone()
-        if not knife:
+    for kid_raw in knife_ids:
+        kid = int(kid_raw)
+        row = conn.execute(
+            "SELECT id, msrp_new_price, sale_price, estimated_value FROM knives WHERE id = ?",
+            (kid,),
+        ).fetchone()
+        if not row:
             continue
-
-        new_sale = 0.0
-
-        if mode == "msrp_fixed":
-            if knife['msrp_new_price'] > 0:
-                new_sale = knife['msrp_new_price'] + amount
-            else:
-                continue
-        elif mode == "msrp_percent":
-            if knife['msrp_new_price'] > 0:
-                new_sale = knife['msrp_new_price'] * (1 + amount / 100.0)
-            else:
-                continue
-        else:
+        raw_sale = BulkPricingService.compute_new_sale(mode, row, amount)
+        if raw_sale is None:
             continue
-
-        new_sale = round(new_sale, 2)
-        if new_sale > 0:
-            conn.execute("UPDATE knives SET sale_price = ? WHERE id = ?", (new_sale, kid))
-            updated += 1
-
+        new_sale = round(float(raw_sale), 2)
+        if new_sale <= 0:
+            continue
+        old_sale = float(row["sale_price"] or 0)
+        conn.execute("UPDATE knives SET sale_price = ? WHERE id = ?", (new_sale, kid))
+        SalePriceHistoryService.record(conn, kid, old_sale, new_sale, f"bulk:{mode}", actor)
+        updated += 1
     conn.commit()
     conn.close()
-    write_audit_log("bulk_pricing", "knife", None, f"mode={mode};amount={amount};updated={updated}")
+    write_audit_log("bulk_pricing", "knife", None, f"mode={mode};amount={amount};updated={updated};apply_all={int(apply_all)}")
     flash(f"Updated sale price for {updated} knives.")
     return redirect(url_for("admin_bulk_pricing"))
+
+
+@app.route("/admin/bulk-pricing/reset-to-msrp", methods=["POST"])
+@admin_required
+def admin_bulk_pricing_reset_to_msrp():
+    SalePriceHistoryService.backup_catalog()
+    actor = (current_user.email if current_user.is_authenticated else "") or ""
+    conn = get_db_connection()
+    rows = conn.execute("SELECT id, msrp_new_price, estimated_value, sale_price FROM knives").fetchall()
+    updated = 0
+    for row in rows:
+        base = BulkPricingService.msrp_base(row)
+        if base <= 0:
+            continue
+        new_sale = round(base, 2)
+        old_sale = float(row["sale_price"] or 0)
+        if round(old_sale, 2) == new_sale:
+            continue
+        conn.execute("UPDATE knives SET sale_price = ? WHERE id = ?", (new_sale, row["id"]))
+        SalePriceHistoryService.record(conn, row["id"], old_sale, new_sale, "reset_msrp", actor)
+        updated += 1
+    conn.commit()
+    conn.close()
+    write_audit_log("bulk_pricing_reset_msrp", "knife", None, f"updated={updated}")
+    flash(f"Reset sale price to MSRP base for {updated} knives.")
+    return redirect(url_for("admin_bulk_pricing"))
+
+
+@app.route("/admin/sale-price-history", methods=["GET"])
+@admin_required
+def admin_sale_price_history():
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT h.id, h.knife_id, h.old_sale, h.new_sale, h.source, h.user_email, h.created_at,
+               k.brand, k.model
+        FROM sale_price_history h
+        LEFT JOIN knives k ON k.id = h.knife_id
+        ORDER BY h.id DESC
+        LIMIT 500
+        """
+    ).fetchall()
+    conn.close()
+    backup_files = []
+    if os.path.isdir(DB_BACKUP_DIR):
+        backup_files = sorted(
+            [f for f in os.listdir(DB_BACKUP_DIR) if f.endswith(".db")],
+            reverse=True,
+        )[:40]
+    return render_template(
+        "admin_sale_price_history.html",
+        rows=rows,
+        backup_files=backup_files,
+        backup_dir=DB_BACKUP_DIR,
+    )
+
+
+@app.route("/admin/snap-prices-to-grid", methods=["POST"])
+@admin_required
+def admin_snap_prices_to_grid():
+    SalePriceHistoryService.backup_catalog()
+    actor = (current_user.email if current_user.is_authenticated else "") or ""
+    conn = get_db_connection()
+    rows = conn.execute("SELECT id, sale_price, msrp_new_price, estimated_value FROM knives").fetchall()
+    for row in rows:
+        kid = row["id"]
+        old_sale = float(row["sale_price"] or 0)
+        new_sale = BulkPricingService.snap_to_fifty_grid(old_sale)
+        new_msrp = BulkPricingService.snap_to_fifty_grid(float(row["msrp_new_price"] or 0))
+        new_est = BulkPricingService.snap_to_fifty_grid(float(row["estimated_value"] or 0))
+        conn.execute(
+            "UPDATE knives SET sale_price = ?, msrp_new_price = ?, estimated_value = ? WHERE id = ?",
+            (new_sale, new_msrp, new_est, kid),
+        )
+        if round(old_sale, 2) != round(new_sale, 2):
+            SalePriceHistoryService.record(conn, kid, old_sale, new_sale, "snap_grid", actor)
+    conn.commit()
+    conn.close()
+    write_audit_log("snap_prices_grid", "knife", None, "all_knives")
+    flash("Snapped sale, MSRP, and estimated values to the nearest ₪50.")
+    return redirect(request.referrer or url_for("admin_bulk_pricing"))
 
 
 # -----------------------------------------------------
@@ -2339,6 +2614,7 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
     msrp_new_price = knife_input_service.clean_float(req.form.get("msrp_new_price", 0))
     cost_price = knife_input_service.clean_float(req.form.get("cost_price", 0))
     sale_price = knife_input_service.clean_float(req.form.get("sale_price", 0))
+    blade_length_cm = knife_input_service.clean_float(req.form.get("blade_length_cm", 0))
     
     currency = knife_input_service.clean_text(req.form.get("currency", "ILS"))
     if currency == "USD":
@@ -2386,23 +2662,33 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
         cur = conn.execute("""
             INSERT INTO knives (brand, model, category, status, buy_price, estimated_value, quantity, notes, image, description,
                 image_url, image_source_url, price_source_url, data_confidence,
-                msrp_new_price, cost_price, sale_price, price_confidence, is_featured)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                msrp_new_price, cost_price, sale_price, price_confidence, is_featured, blade_length_cm)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (brand, model, category, status, buy_price, estimated_value, quantity, notes, filename, description,
               image_url, image_source_url, price_source_url, data_confidence,
-              msrp_new_price, cost_price, sale_price, price_confidence, is_featured))
+              msrp_new_price, cost_price, sale_price, price_confidence, is_featured, blade_length_cm))
         audit_action = "create"
         audit_entity_id = cur.lastrowid
     else:
+        old_sale = float(existing_knife["sale_price"] or 0)
         conn.execute("""
             UPDATE knives
             SET brand=?, model=?, category=?, status=?, buy_price=?, estimated_value=?, quantity=?, notes=?, image=?, description=?,
                 image_url=?, image_source_url=?, price_source_url=?, data_confidence=?,
-                msrp_new_price=?, cost_price=?, sale_price=?, price_confidence=?, is_featured=?
+                msrp_new_price=?, cost_price=?, sale_price=?, price_confidence=?, is_featured=?, blade_length_cm=?
             WHERE id = ?
         """, (brand, model, category, status, buy_price, estimated_value, quantity, notes, filename, description,
               image_url, image_source_url, price_source_url, data_confidence,
-              msrp_new_price, cost_price, sale_price, price_confidence, is_featured, knife_id))
+              msrp_new_price, cost_price, sale_price, price_confidence, is_featured, blade_length_cm, knife_id))
+        if round(old_sale, 2) != round(sale_price, 2):
+            SalePriceHistoryService.record(
+                conn,
+                knife_id,
+                old_sale,
+                sale_price,
+                "admin_edit",
+                (current_user.email if current_user.is_authenticated else "") or "",
+            )
         audit_action = "update"
     conn.commit()
     conn.close()
@@ -2412,9 +2698,50 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
     return redirect(url_for("admin_knives"))
 
 
+@app.errorhandler(Exception)
+def _fallback_exception_response(e):
+    if isinstance(e, RoutingException) and not isinstance(e, HTTPException):
+        raise e
+    if isinstance(e, HTTPException):
+        code = getattr(e, "code", None) or 500
+        if code < 500:
+            return e
+        inner = getattr(e, "original_exception", None)
+        to_log = inner if inner is not None else e
+        _write_error_log(to_log)
+        if os.getenv("FLASK_DEBUG", "0").strip() == "1":
+            import traceback
+            tb = getattr(to_log, "__traceback__", None)
+            body = "".join(traceback.format_exception(type(to_log), to_log, tb))
+            return make_response(body, 500, {"Content-Type": "text/plain; charset=utf-8"})
+        return make_response(
+            "Server error. See knife_inventory_errors.log in the app folder.",
+            500,
+            {"Content-Type": "text/plain; charset=utf-8"},
+        )
+    _write_error_log(e)
+    if os.getenv("FLASK_DEBUG", "0").strip() == "1":
+        import traceback
+        tb = getattr(e, "__traceback__", None)
+        body = "".join(traceback.format_exception(type(e), e, tb))
+        return make_response(body, 500, {"Content-Type": "text/plain; charset=utf-8"})
+    return make_response(
+        "Server error. See knife_inventory_errors.log in the app folder.",
+        500,
+        {"Content-Type": "text/plain; charset=utf-8"},
+    )
+
+
 if __name__ == "__main__":
+    _debug = os.getenv("FLASK_DEBUG", "0").strip() == "1"
+    _host = os.getenv("FLASK_HOST", "127.0.0.1")
+    _want = int(os.getenv("FLASK_PORT", "5000"))
+    _port = flask_listen_port_resolver.resolve(_host, _want)
+    if _port != _want:
+        print(f"Port {_want} was not available; listening on http://{_host}:{_port}")
     app.run(
-        host=os.getenv("FLASK_HOST", "127.0.0.1"),
-        port=int(os.getenv("FLASK_PORT", "5000")),
-        debug=os.getenv("FLASK_DEBUG", "0").strip() == "1",
+        host=_host,
+        port=_port,
+        debug=_debug,
+        use_reloader=_debug and os.getenv("FLASK_USE_RELOADER", "0").strip() == "1",
     )

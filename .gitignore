@@ -6,6 +6,7 @@
 # === Database ===
 *.db
 *.db.backup
+db_backups/
 *.sqlite
 *.sqlite3
 
@@ -51,3 +52,4 @@ desktop.ini
 
 # === Misc ===
 missing.json
+knife_inventory_errors.log

@@ -37,6 +37,10 @@
                 <label style="display: block; font-weight: 500; margin-bottom: 5px;">Quantity</label>
                 <input type="number" min="1" name="quantity" value="{{ knife.quantity if knife else '1' }}" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px;">
             </div>
+            <div>
+                <label style="display: block; font-weight: 500; margin-bottom: 5px;">Blade length (cm)</label>
+                <input type="number" step="0.01" min="0" name="blade_length_cm" value="{% if knife and knife.blade_length_cm %}{{ knife.blade_length_cm }}{% endif %}" placeholder="e.g. 8.64" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px;">
+            </div>
             <div style="display: flex; align-items: center; gap: 10px; padding-top: 25px;">
                 <input type="checkbox" name="is_featured" id="is_featured" {% if knife and knife.is_featured %}checked{% endif %} style="width: 20px; height: 20px; cursor: pointer;">
                 <label for="is_featured" style="font-weight: 600; cursor: pointer; color: var(--primary);">★ Featured Gear (Show on Home Page)</label>

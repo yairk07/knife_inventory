@@ -189,13 +189,13 @@
 
 <div class="status-summary">
     {% for st in statuses %}
-        <a href="{{ url_for('admin_inventory', brand=brand_filter, q=search_q, status=st.key) }}"
+        <a href="{{ url_for('admin_inventory', brand=brand_filter, q=search_q, status=st.key, missing=missing_filter) }}"
            class="summary-chip"
            style="background: {{ st.color }}22; color: {{ st.color }}; border-color: {{ st.color }}44;">
             {{ st.label }}
         </a>
     {% endfor %}
-    <a href="{{ url_for('admin_inventory', brand=brand_filter, q=search_q) }}"
+    <a href="{{ url_for('admin_inventory', brand=brand_filter, q=search_q, missing=missing_filter) }}"
        class="summary-chip"
        style="background: var(--sidebar-hover); color: var(--text-muted); border-color: var(--border);">
         All Statuses
@@ -221,8 +221,15 @@
                 <option value="{{ st.key }}" {% if status_filter == st.key %}selected{% endif %}>{{ st.label }}</option>
             {% endfor %}
         </select>
+        <select name="missing" style="width: 260px;" onchange="this.form.submit()" title="Show only rows missing this field">
+            <option value="" {% if not missing_filter %}selected{% endif %}>All items (no gap filter)</option>
+            <option value="blade_length" {% if missing_filter == 'blade_length' %}selected{% endif %}>Missing: blade length</option>
+            <option value="blade_metals" {% if missing_filter == 'blade_metals' %}selected{% endif %}>Missing: blade material</option>
+            <option value="image" {% if missing_filter == 'image' %}selected{% endif %}>Missing: photo</option>
+            <option value="sale_price" {% if missing_filter == 'sale_price' %}selected{% endif %}>Missing: sale price</option>
+            <option value="description" {% if missing_filter == 'description' %}selected{% endif %}>Missing: description</option>
+        </select>
         <button type="submit" class="btn">Search</button>
-        <input type="hidden" name="brand" value="{{ brand_filter }}">
         <a href="{{ url_for('admin_inventory') }}" style="color: var(--text-muted); text-decoration: underline; font-size: 0.9rem;">Reset</a>
     </form>
 </div>

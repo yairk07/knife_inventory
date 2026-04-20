@@ -3,31 +3,42 @@
 {% block content %}
 <div class="header">
     <h1>Bulk Pricing Tool</h1>
-    <a href="{{ url_for('admin_knives') }}" style="color: var(--text-muted); text-decoration: none;">&larr; Back to List</a>
+    <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
+        <a href="{{ url_for('admin_sale_price_history') }}" class="btn btn-outline" style="padding: 8px 14px; font-size: 0.85rem; text-decoration: none;">Price history &amp; backups</a>
+        <a href="{{ url_for('admin_knives') }}" style="color: var(--text-muted); text-decoration: none;">&larr; Back to List</a>
+    </div>
 </div>
 
 
 
 <form method="POST" action="{{ url_for('admin_bulk_pricing_apply') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <!-- Pricing Mode Selection -->
     <div class="card" style="margin-bottom: 20px;">
         <h3 style="color: var(--primary); margin-bottom: 15px; font-size: 1rem;">Pricing Mode</h3>
         
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 15px; margin-bottom: 20px;">
 
             <label style="display: flex; align-items: center; gap: 10px; background: #111620; padding: 15px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer;">
                 <input type="radio" name="mode" value="msrp_percent" checked style="accent-color: var(--primary);">
                 <div>
                     <strong style="color: #60a5fa;">MSRP</strong> + Percentage
-                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">sale = msrp × (1 + %)</p>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">sale = base × (1 + %); base = MSRP or est.</p>
                 </div>
             </label>
             <label style="display: flex; align-items: center; gap: 10px; background: #111620; padding: 15px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer;">
                 <input type="radio" name="mode" value="msrp_fixed" style="accent-color: var(--primary);">
                 <div>
                     <strong style="color: #60a5fa;">MSRP</strong> + Fixed Amount
-                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">sale = msrp + ₪amount</p>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">sale = base + ₪amount</p>
+                </div>
+            </label>
+            <label style="display: flex; align-items: center; gap: 10px; background: #111620; padding: 15px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer;">
+                <input type="radio" name="mode" value="sale_percent" style="accent-color: var(--primary);">
+                <div>
+                    <strong style="color: var(--primary);">Sale</strong> + Percentage
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">sale = ref × (1 + %); ref = current sale or base</p>
                 </div>
             </label>
         </div>
@@ -45,11 +56,16 @@
 
     <!-- Knife Selection Table -->
     <div class="card" style="padding: 0; overflow-x: auto;">
-        <div style="padding: 15px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <div style="padding: 15px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
             <h3 style="font-size: 1rem; color: var(--text-muted);">Select Knives</h3>
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem;">
-                <input type="checkbox" id="selectAll" style="accent-color: var(--primary);"> Select All
-            </label>
+            <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem;">
+                    <input type="checkbox" name="apply_all" value="1" id="applyAllCatalog" style="accent-color: var(--primary);"> Apply to entire catalog
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem;">
+                    <input type="checkbox" id="selectAll" style="accent-color: var(--primary);"> Select All
+                </label>
+            </div>
         </div>
         <table>
             <thead>
@@ -58,7 +74,7 @@
                     <th>Brand</th>
                     <th>Model</th>
                     <th style="color: #60a5fa;">MSRP</th>
-
+                    <th style="color: var(--text-muted); font-size: 0.75rem;">Est.</th>
                     <th style="color: var(--primary);">Current Sale</th>
                 </tr>
             </thead>
@@ -73,7 +89,9 @@
                     <td style="color: #60a5fa;">
                         {% if knife.msrp_new_price > 0 %}₪{{ fmt_money(knife.msrp_new_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
                     </td>
-
+                    <td style="font-size: 0.85rem; color: var(--text-muted);">
+                        {% if knife.estimated_value > 0 %}₪{{ fmt_money(knife.estimated_value) }}{% else %}—{% endif %}
+                    </td>
                     <td style="color: var(--primary); font-weight: 600;">
                         {% if knife.sale_price > 0 %}₪{{ fmt_money(knife.sale_price) }}{% else %}<span style="color:var(--text-muted)">—</span>{% endif %}
                     </td>
@@ -84,11 +102,42 @@
     </div>
 </form>
 
+<div class="card" style="margin-bottom: 20px;">
+    <h3 style="color: var(--text-muted); margin-bottom: 10px; font-size: 1rem;">Reset sale prices</h3>
+    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+        Sets <strong>sale_price</strong> to MSRP when MSRP &gt; 0, otherwise to estimated value when that is set. Creates a DB backup first.
+    </p>
+    <form method="POST" action="{{ url_for('admin_bulk_pricing_reset_to_msrp') }}" onsubmit="return confirm('Reset sale prices to MSRP / estimated base for all knives?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-outline">Reset all to MSRP base</button>
+    </form>
+</div>
+
+<div class="card" style="margin-bottom: 20px;">
+    <h3 style="color: var(--primary); margin-bottom: 10px; font-size: 1rem;">עיגול מחירים לרשת ₪50 / ₪100</h3>
+    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 14px;">
+        מעדכן לכל הסכינים: <strong>sale_price</strong>, <strong>msrp_new_price</strong>, <strong>estimated_value</strong> לערך הקרוב (חצי למעלה) לכפולות של 50. נוצר גיבוי לפני הפעולה.
+    </p>
+    <form method="POST" action="{{ url_for('admin_snap_prices_to_grid') }}" style="margin:0;" onsubmit="return confirm('לעגל את כל מחירי המבצע וה-MSRP לרשת 50/100?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-outline">Snap all catalog prices to ₪50 grid</button>
+    </form>
+</div>
+
 <script>
 document.getElementById('selectAll').addEventListener('change', function() {
     const checkboxes = document.querySelectorAll('.knife-checkbox');
     checkboxes.forEach(cb => cb.checked = this.checked);
 });
+const applyAllEl = document.getElementById('applyAllCatalog');
+if (applyAllEl) {
+    applyAllEl.addEventListener('change', function() {
+        const checkboxes = document.querySelectorAll('.knife-checkbox');
+        const sel = document.getElementById('selectAll');
+        checkboxes.forEach(cb => { cb.disabled = this.checked; cb.checked = false; });
+        if (sel) { sel.disabled = this.checked; sel.checked = false; }
+    });
+}
 </script>
 
 {% endblock %}

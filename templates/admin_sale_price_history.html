@@ -1,0 +1,65 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="header">
+    <h1>Sale price history</h1>
+    <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+        <form method="POST" action="{{ url_for('admin_snap_prices_to_grid') }}" style="margin:0;" onsubmit="return confirm('Snap all sale + MSRP + estimated to nearest ₪50?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-outline" style="padding: 8px 14px; font-size: 0.85rem;">Snap all prices to ₪50 grid</button>
+        </form>
+        <a href="{{ url_for('admin_bulk_pricing') }}" style="color: var(--text-muted); text-decoration: none;">Bulk pricing</a>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 20px;">
+    <h3 style="font-size: 1rem; color: var(--primary); margin-bottom: 10px;">Database snapshots (before bulk / reset)</h3>
+    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+        Folder: <code style="color: var(--text-main);">{{ backup_dir }}</code><br>
+        Open any file in <strong>DB Browser for SQLite</strong> to compare old <code>sale_price</code> values.
+    </p>
+    {% if backup_files %}
+    <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.9rem; color: var(--sidebar-text);">
+        {% for name in backup_files %}
+        <li><code>{{ name }}</code></li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p style="color: var(--text-muted); font-size: 0.9rem;">No backups yet. The next bulk pricing or “reset to MSRP” run creates one.</p>
+    {% endif %}
+</div>
+
+<div class="card" style="padding: 0; overflow-x: auto;">
+    <div style="padding: 15px 20px; border-bottom: 1px solid var(--border);">
+        <h3 style="font-size: 1rem; color: var(--text-muted);">Recent changes (newest first)</h3>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>When (UTC)</th>
+                <th>Knife</th>
+                <th>Old ₪</th>
+                <th>New ₪</th>
+                <th>Source</th>
+                <th>User</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in rows %}
+            <tr>
+                <td style="font-size: 0.85rem;">{{ r.created_at }}</td>
+                <td>
+                    {% if r.brand %}#{{ r.knife_id }} {{ r.brand }} {{ r.model }}{% else %}#{{ r.knife_id }}{% endif %}
+                </td>
+                <td>{{ fmt_money(r.old_sale) }}</td>
+                <td style="font-weight: 600; color: var(--primary);">{{ fmt_money(r.new_sale) }}</td>
+                <td><code style="font-size: 0.8rem;">{{ r.source }}</code></td>
+                <td style="font-size: 0.85rem;">{{ r.user_email }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="color: var(--text-muted);">No logged changes yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -34,6 +34,8 @@ class StorefrontLocaleService:
             "price_on_request": "Price on request",
             "no_description": "No description available for this model.",
             "blade_steel": "Blade steel",
+            "blade_length": "Blade length",
+            "cm_abbr": "cm",
             "category": "Category",
             "status_label": "Status",
             "availability": "Availability",
@@ -126,6 +128,8 @@ class StorefrontLocaleService:
             "price_on_request": "מחיר לפי בקשה",
             "no_description": "אין תיאור זמין לדגם זה.",
             "blade_steel": "מתכת להב",
+            "blade_length": "אורך להב",
+            "cm_abbr": "ס״מ",
             "category": "קטגוריה",
             "status_label": "סטטוס",
             "availability": "זמינות",
@@ -211,6 +215,25 @@ class StorefrontLocaleService:
         if isinstance(key, str) and key.startswith("status_"):
             return key[7:].replace("_", " ").title()
         return key
+
+    def blade_length_parts(self, cm_value, lang=None):
+        lang = lang or self.get_lang()
+        try:
+            n = float(cm_value)
+        except (TypeError, ValueError):
+            return None
+        if n <= 0:
+            return None
+        num_txt = f"{n:.2f}".rstrip("0").rstrip(".") or "0"
+        label = self.translate("blade_length", lang)
+        unit = self.translate("cm_abbr", lang)
+        return {"label": label, "value": f"{num_txt} {unit}"}
+
+    def blade_length_card_line(self, cm_value, lang=None):
+        parts = self.blade_length_parts(cm_value, lang)
+        if not parts:
+            return ""
+        return f"{parts['label']}: {parts['value']}"
 
     @staticmethod
     def safe_internal_path(candidate):

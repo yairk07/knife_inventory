@@ -28,6 +28,10 @@
             <div class="product-info">
                 <div class="product-brand">{{ knife.brand }}</div>
                 <div class="product-model">{{ knife.model }}</div>
+                {% set bll = blade_length_card_line_knife(knife) %}
+                {% if bll %}
+                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">{{ bll }}</div>
+                {% endif %}
                 <div class="product-price">
                     {% if knife.sale_price and knife.sale_price > 0 %}
                         ₪{{ fmt_money(knife.sale_price) }}
