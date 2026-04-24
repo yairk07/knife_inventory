@@ -2618,10 +2618,10 @@ def _handle_admin_save(req, knife_id=None, existing_knife=None):
     
     currency = knife_input_service.clean_text(req.form.get("currency", "ILS"))
     if currency == "USD":
-        # Convert to ILS (Approximate rate: 3.2)
-        msrp_new_price = round(msrp_new_price * 3.2, 2)
-        cost_price = round(cost_price * 3.2, 2)
-        sale_price = round(sale_price * 3.2, 2)
+        # Convert to ILS (Approximate rate: 3)
+        msrp_new_price = round(msrp_new_price * 3, 2)
+        cost_price = round(cost_price * 3, 2)
+        sale_price = round(sale_price * 3, 2)
     buy_price = cost_price
     estimated_value = msrp_new_price
 

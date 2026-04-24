@@ -44,7 +44,7 @@ class StorefrontLocaleService:
             "na": "N/A",
             "contact_purchase": "Contact to Purchase",
             "sold_out": "Sold Out",
-            "status_home": "Home",
+            "status_home": "In Stock",
             "status_sold": "Sold",
             "status_cart": "Cart",
             "status_on_the_way": "On the way",

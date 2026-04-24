@@ -52,7 +52,7 @@
             <tbody>
                 {% for status in status_counts %}
                 <tr>
-                    <td><span class="pill {{ status.status }}">{{ status.status.replace('_', ' ') }}</span></td>
+                    <td><span class="pill {{ status.status }}">{{ 'In Stock' if status.status == 'home' else status.status.replace('_', ' ') }}</span></td>
                     <td style="font-weight: 600;">{{ fmt_int(status.count) }}</td>
                 </tr>
                 {% else %}

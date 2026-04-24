@@ -18,7 +18,7 @@
         
         <select name="status" style="width: 180px;">
             <option value="">All Statuses</option>
-            <option value="home" {% if status_filter == 'home' %}selected{% endif %}>Home</option>
+            <option value="home" {% if status_filter == 'home' %}selected{% endif %}>In Stock</option>
             <option value="cart" {% if status_filter == 'cart' %}selected{% endif %}>Cart</option>
             <option value="on_the_way" {% if status_filter == 'on_the_way' %}selected{% endif %}>On the way</option>
             <option value="sold" {% if status_filter == 'sold' %}selected{% endif %}>Sold</option>
@@ -58,7 +58,7 @@
                 </td>
                 <td style="font-weight: 500;">{{ knife.brand }}</td>
                 <td>{{ knife.model }}</td>
-                <td><span class="pill {{ knife.status }}">{{ knife.status.replace('_', ' ') }}</span></td>
+                <td><span class="pill {{ knife.status }}">{{ 'In Stock' if knife.status == 'home' else knife.status.replace('_', ' ') }}</span></td>
                 <td style="font-weight: 500;">{{ fmt_int(knife.quantity) }}</td>
                 <td style="color: #60a5fa;">
                     {% if knife.msrp_new_price and knife.msrp_new_price > 0 %}₪{{ fmt_money(knife.msrp_new_price) }}{% else %}<span style="color:var(--text-muted)">N/A</span>{% endif %}
@@ -74,7 +74,7 @@
                 <td>
                     <div style="display: flex; gap: 8px;">
                         <a href="{{ url_for('admin_edit_knife', knife_id=knife.id) }}" class="btn btn-outline" style="padding: 6px 10px; font-size: 0.8rem;">Edit</a>
-                        <form action="{{ url_for('admin_delete_knife', knife_id=knife.id) }}" method="POST" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete this item?');">
+                        <form action="{{ url_for('admin_delete_knife', knife_id=knife.id) }}" method="POST" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete this knife? This action cannot be undone.');">
                             <button type="submit" class="btn btn-danger" style="padding: 6px 10px; font-size: 0.8rem;">Del</button>
                         </form>
                     </div>

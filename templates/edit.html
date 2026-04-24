@@ -66,7 +66,7 @@
                 <input type="text" name="model" value="{{ knife['model'] }}" required>
 
                 <select name="status" required>
-                    <option value="home" {% if knife["status"]= ="home" %}selected{% endif %}>Home</option>
+                    <option value="home" {% if knife["status"]= ="home" %}selected{% endif %}>In Stock</option>
                     <option value="cart" {% if knife["status"]= ="cart" %}selected{% endif %}>Cart</option>
                     <option value="on_the_way" {% if knife["status"]= ="on_the_way" %}selected{% endif %}>On the way</option>
                 </select>
